@@ -1,0 +1,23 @@
+*.o
+*.obj
+*.out
+*.dll
+*.dylib
+*.so
+*.a
+*.exe
+/build/
+/nimcache/
+/tests/nimcache/
+/examples/nimcache/
+
+# Nim binaries
+flowcurl
+
+# Editor
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
