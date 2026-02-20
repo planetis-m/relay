@@ -25,14 +25,14 @@ defer:
   client.close()
 
 var batch: RequestBatch
-batch.get("https://example.com", tag = "home")
-batch.get("https://example.org", tag = "org")
+batch.get("https://example.com", requestId = 1)
+batch.get("https://example.org", requestId = 2)
 
 for item in client.makeRequests(batch):
   if item.error.kind == teNone:
-    echo item.response.request.tag, " status=", item.response.code
+    echo item.response.request.requestId, " status=", item.response.code
   else:
-    echo item.response.request.tag, " error=", item.error.kind,
+    echo item.response.request.requestId, " error=", item.error.kind,
       " ", item.error.message
 ```
 
@@ -48,8 +48,8 @@ defer:
   client.close()
 
 var batch: RequestBatch
-batch.post("https://example.com/api", body = """{"x":1}""", tag = "job-1")
-batch.post("https://example.com/api", body = """{"x":2}""", tag = "job-2")
+batch.post("https://example.com/api", body = """{"x":1}""", requestId = 101)
+batch.post("https://example.com/api", body = """{"x":2}""", requestId = 102)
 client.startRequests(batch)
 
 var pending = batch.len
@@ -58,9 +58,9 @@ while pending > 0:
   if client.waitForResult(item):
     dec pending
     if item.error.kind == teNone:
-      echo item.response.request.tag, " -> ", item.response.code
+      echo item.response.request.requestId, " -> ", item.response.code
     else:
-      echo item.response.request.tag, " failed: ", item.error.message
+      echo item.response.request.requestId, " failed: ", item.error.message
 ```
 
 ## API Reference
@@ -70,7 +70,8 @@ Public API is exported from `src/relay.nim`.
 ### Core Types
 
 - `HttpHeaders = seq[tuple[name: string, value: string]]`
-- `BatchRequest`: request definition (`verb`, `url`, `headers`, `body`, `tag`, `timeoutMs`)
+- `BatchRequest`: request definition (`verb`, `url`, `headers`, `body`, `requestId`,
+  `timeoutMs`)
 - `RequestBatch`: mutable batch builder
 - `BatchResult = tuple[response: Response, error: TransportError]`
 - `ResponseBatch = seq[BatchResult]`
@@ -101,19 +102,19 @@ proc abort*(client: Relay)
 
 ```nim
 proc addRequest*(batch: var RequestBatch; verb, url: string; headers = emptyHttpHeaders();
-    body = ""; tag = ""; timeoutMs = 0)
+    body = ""; requestId = 0'i64; timeoutMs = 0)
 proc get*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    tag = ""; timeoutMs = 0)
+    requestId = 0'i64; timeoutMs = 0)
 proc post*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    body = ""; tag = ""; timeoutMs = 0)
+    body = ""; requestId = 0'i64; timeoutMs = 0)
 proc put*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    body = ""; tag = ""; timeoutMs = 0)
+    body = ""; requestId = 0'i64; timeoutMs = 0)
 proc patch*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    body = ""; tag = ""; timeoutMs = 0)
+    body = ""; requestId = 0'i64; timeoutMs = 0)
 proc delete*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    tag = ""; timeoutMs = 0)
+    requestId = 0'i64; timeoutMs = 0)
 proc head*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    tag = ""; timeoutMs = 0)
+    requestId = 0'i64; timeoutMs = 0)
 ```
 
 Utilities:
@@ -158,7 +159,7 @@ proc queueLen*(client: Relay): int
 
 - Results are delivered in completion order, not submission order.
 - Every request yields exactly one `BatchResult`.
-- `Response.request.tag` echoes the request tag for correlation.
+- `Response.request.requestId` echoes the request id for correlation.
 - Redirects are enabled by default (`maxRedirects`).
 - Response body is automatically decoded when server uses gzip/deflate.
 
