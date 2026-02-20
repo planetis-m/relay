@@ -52,7 +52,6 @@ type
     requests: seq[BatchRequest]
 
   RequestWrap = ref object
-    submitSeq: int
     verb: string
     url: string
     headers: HttpHeaders
@@ -78,13 +77,10 @@ type
     maxInFlight: int
     defaultTimeoutMs: int
     maxRedirects: int
-    nextSubmitSeq: int
-    nextEmitSeq: int
     multi: Multi
     availableEasy: seq[Easy]
     queue: Deque[RequestWrap]
     inFlight: Table[uint, RequestWrap]
-    completedBySeq: Table[int, BatchResult]
     readyResults: Deque[BatchResult]
 
 proc emptyHttpHeaders*(): HttpHeaders =
@@ -169,12 +165,8 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     request: RequestInfo(verb: request.verb, url: request.url, tag: request.tag)
   )
 
-proc storeCompletionLocked(client: Relay; seqId: int; item: sink BatchResult) =
-  client.completedBySeq[seqId] = item
-  var ready: BatchResult
-  while client.completedBySeq.pop(client.nextEmitSeq, ready):
-    client.readyResults.addLast(ready)
-    inc client.nextEmitSeq
+proc storeCompletionLocked(client: Relay; item: sink BatchResult) =
+  client.readyResults.addLast(item)
   signal(client.resultCond)
 
 proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
@@ -233,7 +225,7 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
 proc flushCanceledLocked(client: Relay; message: string) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    client.storeCompletionLocked(queued.submitSeq,
+    client.storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, message)))
 
   for _, req in client.inFlight:
@@ -242,7 +234,7 @@ proc flushCanceledLocked(client: Relay; message: string) =
     except CatchableError:
       discard
     client.availableEasy.add(req.easy)
-    client.storeCompletionLocked(req.submitSeq,
+    client.storeCompletionLocked(
       (newResponse(req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
 
@@ -256,10 +248,10 @@ proc runEasyLoop(client: Relay): bool =
     acquire(client.lock)
     while client.queue.len > 0:
       let queued = client.queue.popFirst()
-      client.storeCompletionLocked(queued.submitSeq,
+      client.storeCompletionLocked(
         (newResponse(queued), newTransportError(teInternal, loopError)))
     for _, req in client.inFlight:
-      client.storeCompletionLocked(req.submitSeq,
+      client.storeCompletionLocked(
         (newResponse(req), newTransportError(teInternal, loopError)))
     client.inFlight.clear()
     client.abortRequested = true
@@ -289,7 +281,7 @@ proc processDoneMessages(client: Relay) =
         acquire(client.lock)
         if request.easy != nil:
           client.availableEasy.add(request.easy)
-        client.storeCompletionLocked(request.submitSeq, completion)
+        client.storeCompletionLocked(completion)
         release(client.lock)
 
 proc dispatchQueuedRequests(client: Relay) =
@@ -321,7 +313,7 @@ proc dispatchQueuedRequests(client: Relay) =
         client.inFlight[handleKey(easy)] = request
       else:
         client.availableEasy.add(easy)
-        client.storeCompletionLocked(request.submitSeq,
+        client.storeCompletionLocked(
           (newResponse(request), newTransportError(teInternal, dispatchError)))
       release(client.lock)
 
@@ -380,13 +372,10 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
   result.closeRequested = false
   result.abortRequested = false
   result.closed = false
-  result.nextSubmitSeq = 0
-  result.nextEmitSeq = 0
   result.multi = initMulti()
   result.queue = initDeque[RequestWrap]()
   result.readyResults = initDeque[BatchResult]()
   result.inFlight = initTable[uint, RequestWrap]()
-  result.completedBySeq = initTable[int, BatchResult]()
   for _ in 0..<result.maxInFlight:
     result.availableEasy.add(initEasy())
 
@@ -411,7 +400,6 @@ proc close*(client: Relay) =
   client.availableEasy.setLen(0)
   client.queue.clear()
   client.inFlight.clear()
-  client.completedBySeq.clear()
   client.readyResults.clear()
   release(client.lock)
 
@@ -439,7 +427,6 @@ proc abort*(client: Relay) =
     client.availableEasy.setLen(0)
     client.queue.clear()
     client.inFlight.clear()
-    client.completedBySeq.clear()
     client.readyResults.clear()
     release(client.lock)
 
@@ -467,7 +454,7 @@ proc clearQueue*(client: Relay) {.gcsafe.} =
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    client.storeCompletionLocked(queued.submitSeq,
+    client.storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
@@ -479,7 +466,6 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) {.gcsafe.} =
 
   for request in batch.requests.mitems:
     let wrapped = RequestWrap(
-      submitSeq: client.nextSubmitSeq,
       verb: request.verb,
       url: request.url,
       headers: request.headers,
@@ -490,7 +476,6 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) {.gcsafe.} =
       responseHeadersRaw: "",
       easy: nil
     )
-    inc client.nextSubmitSeq
     client.queue.addLast(wrapped)
 
   signal(client.wakeCond)
