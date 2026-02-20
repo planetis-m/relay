@@ -1,6 +1,6 @@
 import std/[deques, locks, strutils, tables]
-import ./bindings/curl
-import ./curl_wrap
+import ./relay/bindings/curl
+import ./relay/curl_wrap
 
 const
   MultiWaitMaxMs = 250
@@ -64,13 +64,13 @@ type
     easy: Easy
     curlHeaders: Slist
 
-  OrderedClient* = ref OrderedClientObj
+  Relay* = ref RelayObj
 
-  OrderedClientObj = object
+  RelayObj = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
-    thread: Thread[OrderedClient]
+    thread: Thread[Relay]
     workerRunning: bool
     closeRequested: bool
     abortRequested: bool
@@ -169,7 +169,7 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     request: RequestInfo(verb: request.verb, url: request.url, tag: request.tag)
   )
 
-proc storeCompletionLocked(client: OrderedClient; seqId: int; item: sink BatchResult) =
+proc storeCompletionLocked(client: Relay; seqId: int; item: sink BatchResult) =
   client.completedBySeq[seqId] = item
   var ready: BatchResult
   while client.completedBySeq.pop(client.nextEmitSeq, ready):
@@ -177,7 +177,7 @@ proc storeCompletionLocked(client: OrderedClient; seqId: int; item: sink BatchRe
     inc client.nextEmitSeq
   signal(client.resultCond)
 
-proc configureEasy(client: OrderedClient; request: RequestWrap; easy: var Easy) =
+proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
 
@@ -230,7 +230,7 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: OrderedClient; message: string) =
+proc flushCanceledLocked(client: Relay; message: string) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
     client.storeCompletionLocked(queued.submitSeq,
@@ -246,7 +246,7 @@ proc flushCanceledLocked(client: OrderedClient; message: string) =
       (newResponse(req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
 
-proc runEasyLoop(client: OrderedClient): bool =
+proc runEasyLoop(client: Relay): bool =
   result = true
   try:
     discard client.multi.perform()
@@ -267,7 +267,7 @@ proc runEasyLoop(client: OrderedClient): bool =
     release(client.lock)
     result = false
 
-proc processDoneMessages(client: OrderedClient) =
+proc processDoneMessages(client: Relay) =
   var msg: CURLMsg
   var msgsInQueue = 0
   while client.multi.tryInfoRead(msg, msgsInQueue):
@@ -292,7 +292,7 @@ proc processDoneMessages(client: OrderedClient) =
         client.storeCompletionLocked(request.submitSeq, completion)
         release(client.lock)
 
-proc dispatchQueuedRequests(client: OrderedClient) =
+proc dispatchQueuedRequests(client: Relay) =
   var done = false
   while not done:
     var request: RequestWrap
@@ -325,7 +325,7 @@ proc dispatchQueuedRequests(client: OrderedClient) =
           (newResponse(request), newTransportError(teInternal, dispatchError)))
       release(client.lock)
 
-proc waitForWorkOrClose(client: OrderedClient): bool =
+proc waitForWorkOrClose(client: Relay): bool =
   result = true
   acquire(client.lock)
   while not client.abortRequested and not client.closeRequested and
@@ -338,7 +338,7 @@ proc waitForWorkOrClose(client: OrderedClient): bool =
     result = false
   release(client.lock)
 
-proc workerMain(client: OrderedClient) {.thread, raises: [].} =
+proc workerMain(client: Relay) {.thread, raises: [].} =
   while true:
     dispatchQueuedRequests(client)
 
@@ -365,8 +365,8 @@ proc workerMain(client: OrderedClient) {.thread, raises: [].} =
   signal(client.resultCond)
   release(client.lock)
 
-proc newOrderedClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
-    maxRedirects = 10): OrderedClient =
+proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
+    maxRedirects = 10): Relay =
   initGlobal()
 
   new(result)
@@ -392,7 +392,7 @@ proc newOrderedClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
 
   createThread(result.thread, workerMain, result)
 
-proc close*(client: OrderedClient) =
+proc close*(client: Relay) =
   if client.isNil:
     return
 
@@ -420,7 +420,7 @@ proc close*(client: OrderedClient) =
   deinitLock(client.lock)
   cleanupGlobal()
 
-proc abort*(client: OrderedClient) =
+proc abort*(client: Relay) =
   if client.isNil:
     return
 
@@ -448,22 +448,22 @@ proc abort*(client: OrderedClient) =
     deinitLock(client.lock)
     cleanupGlobal()
 
-proc hasRequests*(client: OrderedClient): bool {.gcsafe.} =
+proc hasRequests*(client: Relay): bool {.gcsafe.} =
   acquire(client.lock)
   result = client.queue.len > 0 or client.inFlight.len > 0
   release(client.lock)
 
-proc numInFlight*(client: OrderedClient): int {.gcsafe.} =
+proc numInFlight*(client: Relay): int {.gcsafe.} =
   acquire(client.lock)
   result = client.inFlight.len
   release(client.lock)
 
-proc queueLen*(client: OrderedClient): int {.gcsafe.} =
+proc queueLen*(client: Relay): int {.gcsafe.} =
   acquire(client.lock)
   result = client.queue.len
   release(client.lock)
 
-proc clearQueue*(client: OrderedClient) {.gcsafe.} =
+proc clearQueue*(client: Relay) {.gcsafe.} =
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
@@ -471,7 +471,7 @@ proc clearQueue*(client: OrderedClient) {.gcsafe.} =
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
-proc startRequests*(client: OrderedClient; batch: sink RequestBatch) {.gcsafe.} =
+proc startRequests*(client: Relay; batch: sink RequestBatch) {.gcsafe.} =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
@@ -480,11 +480,11 @@ proc startRequests*(client: OrderedClient; batch: sink RequestBatch) {.gcsafe.} 
   for request in batch.requests.mitems:
     let wrapped = RequestWrap(
       submitSeq: client.nextSubmitSeq,
-      verb: move request.verb,
-      url: move request.url,
-      headers: move request.headers,
-      body: move request.body,
-      tag: move request.tag,
+      verb: request.verb,
+      url: request.url,
+      headers: request.headers,
+      body: request.body,
+      tag: request.tag,
       timeoutMs: request.timeoutMs,
       responseBody: "",
       responseHeadersRaw: "",
@@ -496,7 +496,7 @@ proc startRequests*(client: OrderedClient; batch: sink RequestBatch) {.gcsafe.} 
   signal(client.wakeCond)
   release(client.lock)
 
-proc waitForResult*(client: OrderedClient; outResult: var BatchResult): bool {.gcsafe.} =
+proc waitForResult*(client: Relay; outResult: var BatchResult): bool {.gcsafe.} =
   acquire(client.lock)
   while client.readyResults.len == 0 and client.workerRunning:
     wait(client.resultCond, client.lock)
@@ -508,7 +508,7 @@ proc waitForResult*(client: OrderedClient; outResult: var BatchResult): bool {.g
     result = false
   release(client.lock)
 
-proc pollForResult*(client: OrderedClient; outResult: var BatchResult): bool {.gcsafe.} =
+proc pollForResult*(client: Relay; outResult: var BatchResult): bool {.gcsafe.} =
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
@@ -517,7 +517,7 @@ proc pollForResult*(client: OrderedClient; outResult: var BatchResult): bool {.g
     result = false
   release(client.lock)
 
-proc makeRequests*(client: OrderedClient; batch: RequestBatch): ResponseBatch {.gcsafe.} =
+proc makeRequests*(client: Relay; batch: RequestBatch): ResponseBatch {.gcsafe.} =
   acquire(client.lock)
   let busy =
     client.queue.len > 0 or
@@ -529,7 +529,7 @@ proc makeRequests*(client: OrderedClient; batch: RequestBatch): ResponseBatch {.
     raise newException(IOError, "makeRequests requires an idle client")
 
   var toSend = batch
-  client.startRequests(move toSend)
+  client.startRequests(toSend)
   result = @[]
   for _ in 0..<batch.requests.len:
     var item: BatchResult
@@ -547,40 +547,40 @@ proc addRequest*(batch: var RequestBatch; verb: sink string; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     tag: sink string = ""; timeoutMs = 0) =
   batch.requests.add(BatchRequest(
-    verb: move verb,
-    url: move url,
-    headers: move headers,
-    body: move body,
-    tag: move tag,
+    verb: verb,
+    url: url,
+    headers: headers,
+    body: body,
+    tag: tag,
     timeoutMs: timeoutMs
   ))
 
 proc get*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); tag: sink string = "";
     timeoutMs = 0) =
-  batch.addRequest("GET", move url, move headers, "", move tag, timeoutMs)
+  batch.addRequest("GET", url, headers, "", tag, timeoutMs)
 
 proc post*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     tag: sink string = ""; timeoutMs = 0) =
-  batch.addRequest("POST", move url, move headers, move body, move tag, timeoutMs)
+  batch.addRequest("POST", url, headers, body, tag, timeoutMs)
 
 proc put*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     tag: sink string = ""; timeoutMs = 0) =
-  batch.addRequest("PUT", move url, move headers, move body, move tag, timeoutMs)
+  batch.addRequest("PUT", url, headers, body, tag, timeoutMs)
 
 proc patch*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     tag: sink string = ""; timeoutMs = 0) =
-  batch.addRequest("PATCH", move url, move headers, move body, move tag, timeoutMs)
+  batch.addRequest("PATCH", url, headers, body, tag, timeoutMs)
 
 proc delete*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); tag: sink string = "";
     timeoutMs = 0) =
-  batch.addRequest("DELETE", move url, move headers, "", move tag, timeoutMs)
+  batch.addRequest("DELETE", url, headers, "", tag, timeoutMs)
 
 proc head*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); tag: sink string = "";
     timeoutMs = 0) =
-  batch.addRequest("HEAD", move url, move headers, "", move tag, timeoutMs)
+  batch.addRequest("HEAD", url, headers, "", tag, timeoutMs)

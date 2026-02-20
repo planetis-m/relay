@@ -1,4 +1,4 @@
-# Minimal libcurl bindings used by FlowCurl.
+# Minimal libcurl bindings used by Relay.
 
 type
   CURL* = distinct pointer

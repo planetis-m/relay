@@ -1,4 +1,4 @@
-import flowcurl
+import relay
 
 proc verifyOrdered(batchResults: ResponseBatch; expectedTags: seq[string]) =
   doAssert batchResults.len == expectedTags.len
@@ -6,7 +6,7 @@ proc verifyOrdered(batchResults: ResponseBatch; expectedTags: seq[string]) =
     doAssert item.response.request.tag == expectedTags[i]
 
 proc main() =
-  var client = newOrderedClient(maxInFlight = 3, defaultTimeoutMs = 500, maxRedirects = 5)
+  var client = newRelay(maxInFlight = 3, defaultTimeoutMs = 500, maxRedirects = 5)
   defer:
     client.close()
 

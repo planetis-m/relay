@@ -1,7 +1,7 @@
-import flowcurl
+import relay
 
 proc main() =
-  var client = newOrderedClient(maxInFlight = 8)
+  var client = newRelay(maxInFlight = 8)
   defer:
     client.close()
 
