@@ -1,15 +1,15 @@
 import std/[deques, locks, strutils, tables]
+import ./relay/http_headers
 import ./relay/bindings/curl
 import ./relay/curl_wrap
+
+export http_headers
 
 const
   MultiWaitMaxMs = 250
   DefaultConnectTimeoutMs = 10_000
 
 type
-  HttpHeader* = tuple[name: string, value: string]
-  HttpHeaders* = seq[HttpHeader]
-
   TransportErrorKind* = enum
     teNone,
     teTimeout,
@@ -82,9 +82,6 @@ type
     queue: Deque[RequestWrap]
     inFlight: Table[uint, RequestWrap]
     readyResults: Deque[BatchResult]
-
-proc emptyHttpHeaders*(): HttpHeaders =
-  @[]
 
 proc noTransportError(): TransportError {.inline.} =
   TransportError(kind: teNone, message: "", curlCode: 0)

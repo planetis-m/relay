@@ -11,5 +11,13 @@ proc main() =
   doAssert batch[1].verb == "POST"
   doAssert batch[1].body == "x"
 
+  var headers = emptyHttpHeaders()
+  doAssert not headers.contains("Content-Type")
+  headers["Content-Type"] = "application/json"
+  doAssert headers.contains("content-type")
+  doAssert headers["CONTENT-TYPE"] == "application/json"
+  headers["content-type"] = "text/plain"
+  doAssert headers["Content-Type"] == "text/plain"
+
 when isMainModule:
   main()
