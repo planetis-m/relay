@@ -28,7 +28,7 @@ type
   RequestInfo* = object
     verb*: string
     url*: string
-    tag*: string
+    requestId*: int64
 
   Response* = object
     code*: int
@@ -42,7 +42,7 @@ type
     url*: string
     headers*: HttpHeaders
     body*: string
-    tag*: string
+    requestId*: int64
     timeoutMs*: int
 
   BatchResult* = tuple[response: Response, error: TransportError]
@@ -56,7 +56,7 @@ type
     url: string
     headers: HttpHeaders
     body: string
-    tag: string
+    requestId: int64
     timeoutMs: int
     responseBody: string
     responseHeadersRaw: string
@@ -159,7 +159,11 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     url: request.url,
     headers: @[],
     body: "",
-    request: RequestInfo(verb: request.verb, url: request.url, tag: request.tag)
+    request: RequestInfo(
+      verb: request.verb,
+      url: request.url,
+      requestId: request.requestId
+    )
   )
 
 proc storeCompletionLocked(client: Relay; item: sink BatchResult) =
@@ -467,7 +471,7 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) {.gcsafe.} =
       url: request.url,
       headers: request.headers,
       body: request.body,
-      tag: request.tag,
+      requestId: request.requestId,
       timeoutMs: request.timeoutMs,
       responseBody: "",
       responseHeadersRaw: "",
@@ -527,42 +531,42 @@ proc `[]`*(batch: RequestBatch; i: int): lent BatchRequest =
 
 proc addRequest*(batch: var RequestBatch; verb: sink string; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    tag: sink string = ""; timeoutMs = 0) =
+    requestId = 0'i64; timeoutMs = 0) =
   batch.requests.add(BatchRequest(
     verb: verb,
     url: url,
     headers: headers,
     body: body,
-    tag: tag,
+    requestId: requestId,
     timeoutMs: timeoutMs
   ))
 
 proc get*(batch: var RequestBatch; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); tag: sink string = "";
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
-  batch.addRequest("GET", url, headers, "", tag, timeoutMs)
+  batch.addRequest("GET", url, headers, "", requestId, timeoutMs)
 
 proc post*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    tag: sink string = ""; timeoutMs = 0) =
-  batch.addRequest("POST", url, headers, body, tag, timeoutMs)
+    requestId = 0'i64; timeoutMs = 0) =
+  batch.addRequest("POST", url, headers, body, requestId, timeoutMs)
 
 proc put*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    tag: sink string = ""; timeoutMs = 0) =
-  batch.addRequest("PUT", url, headers, body, tag, timeoutMs)
+    requestId = 0'i64; timeoutMs = 0) =
+  batch.addRequest("PUT", url, headers, body, requestId, timeoutMs)
 
 proc patch*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    tag: sink string = ""; timeoutMs = 0) =
-  batch.addRequest("PATCH", url, headers, body, tag, timeoutMs)
+    requestId = 0'i64; timeoutMs = 0) =
+  batch.addRequest("PATCH", url, headers, body, requestId, timeoutMs)
 
 proc delete*(batch: var RequestBatch; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); tag: sink string = "";
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
-  batch.addRequest("DELETE", url, headers, "", tag, timeoutMs)
+  batch.addRequest("DELETE", url, headers, "", requestId, timeoutMs)
 
 proc head*(batch: var RequestBatch; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); tag: sink string = "";
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
-  batch.addRequest("HEAD", url, headers, "", tag, timeoutMs)
+  batch.addRequest("HEAD", url, headers, "", requestId, timeoutMs)
