@@ -3,7 +3,7 @@
 Relay is a general-purpose Nim HTTP batching client with:
 
 - parallel in-flight requests (`maxInFlight`),
-- strict ordered result delivery by submission order,
+- completion-order result delivery by default,
 - Curly-style batch APIs (`startRequests`, `waitForResult`, `makeRequests`).
 
 ## Install
