@@ -503,7 +503,7 @@ proc pollForResult*(client: Relay; outResult: var BatchResult): bool =
     result = false
   release(client.lock)
 
-proc makeRequests*(client: Relay; batch: RequestBatch): ResponseBatch =
+proc makeRequests*(client: Relay; batch: sink RequestBatch): ResponseBatch =
   acquire(client.lock)
   let busy =
     client.queue.len > 0 or
@@ -514,10 +514,10 @@ proc makeRequests*(client: Relay; batch: RequestBatch): ResponseBatch =
   if busy:
     raise newException(IOError, "makeRequests requires an idle client")
 
-  var toSend = batch
-  client.startRequests(toSend)
+  let expected = batch.requests.len
+  client.startRequests(batch)
   result = @[]
-  for _ in 0..<batch.requests.len:
+  for _ in 0..<expected:
     var item: BatchResult
     if not client.waitForResult(item):
       raise newException(IOError, "client stopped before all responses arrived")
