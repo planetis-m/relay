@@ -11,10 +11,9 @@ proc verifyContains(batchResults: ResponseBatch; expectedRequestIds: seq[int64])
   wantRequestIds.sort()
   doAssert gotRequestIds == wantRequestIds
 
-proc main() =
+proc main =
   var client = newRelay(maxInFlight = 3, defaultTimeoutMs = 500, maxRedirects = 5)
-  defer:
-    client.close()
+  defer: client.close()
 
   var batch: RequestBatch
   # Unreachable loopback ports fail fast and still exercise async collection.
@@ -23,7 +22,7 @@ proc main() =
   batch.get("http://127.0.0.1:3", requestId = 3, timeoutMs = 500)
 
   let blockingResults = client.makeRequests(batch)
-  verifyContains(blockingResults, @[1'i64, 2'i64, 3'i64])
+  verifyContains(blockingResults, @[1'i64, 2, 3])
 
   var asyncBatch: RequestBatch
   asyncBatch.get("http://127.0.0.1:4", requestId = 4, timeoutMs = 500)
@@ -37,7 +36,7 @@ proc main() =
     doAssert client.waitForResult(item)
     asyncResults.add(item)
 
-  verifyContains(asyncResults, @[4'i64, 5'i64, 6'i64])
+  verifyContains(asyncResults, @[4'i64, 5, 6])
 
 when isMainModule:
   main()

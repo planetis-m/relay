@@ -436,22 +436,22 @@ proc abort*(client: Relay) =
     deinitLock(client.lock)
     cleanupGlobal()
 
-proc hasRequests*(client: Relay): bool {.gcsafe.} =
+proc hasRequests*(client: Relay): bool =
   acquire(client.lock)
   result = client.queue.len > 0 or client.inFlight.len > 0
   release(client.lock)
 
-proc numInFlight*(client: Relay): int {.gcsafe.} =
+proc numInFlight*(client: Relay): int =
   acquire(client.lock)
   result = client.inFlight.len
   release(client.lock)
 
-proc queueLen*(client: Relay): int {.gcsafe.} =
+proc queueLen*(client: Relay): int =
   acquire(client.lock)
   result = client.queue.len
   release(client.lock)
 
-proc clearQueue*(client: Relay) {.gcsafe.} =
+proc clearQueue*(client: Relay) =
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
@@ -459,7 +459,7 @@ proc clearQueue*(client: Relay) {.gcsafe.} =
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
-proc startRequests*(client: Relay; batch: sink RequestBatch) {.gcsafe.} =
+proc startRequests*(client: Relay; batch: sink RequestBatch) =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
@@ -482,7 +482,7 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) {.gcsafe.} =
   signal(client.wakeCond)
   release(client.lock)
 
-proc waitForResult*(client: Relay; outResult: var BatchResult): bool {.gcsafe.} =
+proc waitForResult*(client: Relay; outResult: var BatchResult): bool =
   acquire(client.lock)
   while client.readyResults.len == 0 and client.workerRunning:
     wait(client.resultCond, client.lock)
@@ -494,7 +494,7 @@ proc waitForResult*(client: Relay; outResult: var BatchResult): bool {.gcsafe.} 
     result = false
   release(client.lock)
 
-proc pollForResult*(client: Relay; outResult: var BatchResult): bool {.gcsafe.} =
+proc pollForResult*(client: Relay; outResult: var BatchResult): bool =
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
@@ -503,7 +503,7 @@ proc pollForResult*(client: Relay; outResult: var BatchResult): bool {.gcsafe.} 
     result = false
   release(client.lock)
 
-proc makeRequests*(client: Relay; batch: RequestBatch): ResponseBatch {.gcsafe.} =
+proc makeRequests*(client: Relay; batch: RequestBatch): ResponseBatch =
   acquire(client.lock)
   let busy =
     client.queue.len > 0 or

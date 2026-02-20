@@ -1,6 +1,6 @@
 # Package
 version = "0.1.2"
-author = "Ageralis"
+author = "planetis"
 description = "Relay: parallel HTTP batching for Nim"
 license = "MIT"
 srcDir = "src"

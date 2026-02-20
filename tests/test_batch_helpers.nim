@@ -1,6 +1,6 @@
 import relay
 
-proc main() =
+proc main =
   var batch: RequestBatch
   batch.get("http://127.0.0.1:1", requestId = 11)
   batch.post("http://127.0.0.1:2", body = "x", requestId = 22)
