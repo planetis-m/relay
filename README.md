@@ -21,8 +21,7 @@ nimble install
 import relay
 
 var client = newRelay(maxInFlight = 8)
-defer:
-  client.close()
+defer: client.close()
 
 var batch: RequestBatch
 batch.get("https://example.com", requestId = 1)
@@ -44,8 +43,7 @@ Use this when your app has its own scheduling loop.
 import relay
 
 var client = newRelay(maxInFlight = 16)
-defer:
-  client.close()
+defer: client.close()
 
 var batch: RequestBatch
 batch.post("https://example.com/api", body = """{"x":1}""", requestId = 101)

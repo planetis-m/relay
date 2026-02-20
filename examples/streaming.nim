@@ -1,9 +1,8 @@
 import relay
 
-proc main() =
+proc main =
   var client = newRelay(maxInFlight = 2)
-  defer:
-    client.close()
+  defer: client.close()
 
   var batch: RequestBatch
   batch.get("https://example.com", requestId = 1)
