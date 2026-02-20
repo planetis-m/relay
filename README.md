@@ -132,7 +132,7 @@ proc `[]=`*(headers: var HttpHeaders; key, value: string)
 proc startRequests*(client: Relay; batch: sink RequestBatch)
 proc waitForResult*(client: Relay; outResult: var BatchResult): bool
 proc pollForResult*(client: Relay; outResult: var BatchResult): bool
-proc makeRequests*(client: Relay; batch: RequestBatch): ResponseBatch
+proc makeRequests*(client: Relay; batch: sink RequestBatch): ResponseBatch
 ```
 
 - `makeRequests` is blocking convenience API.
