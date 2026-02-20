@@ -1,6 +1,6 @@
-# flowcurl
+# relay
 
-FlowCurl is a general-purpose Nim HTTP batching client with:
+Relay is a general-purpose Nim HTTP batching client with:
 
 - parallel in-flight requests (`maxInFlight`),
 - strict ordered result delivery by submission order,
@@ -15,9 +15,9 @@ nimble install
 ## Quick Example
 
 ```nim
-import flowcurl
+import relay
 
-var client = newOrderedClient(maxInFlight = 8)
+var client = newRelay(maxInFlight = 8)
 var batch: RequestBatch
 batch.get("https://example.com", tag = "home")
 batch.get("https://example.org", tag = "org")
@@ -33,9 +33,9 @@ client.close()
 
 ## API
 
-Public exports are in `src/flowcurl.nim`.
+Public exports are in `src/relay.nim`.
 
-- `newOrderedClient`
+- `newRelay`
 - `startRequests`
 - `waitForResult`
 - `pollForResult`
@@ -46,6 +46,7 @@ Public exports are in `src/flowcurl.nim`.
 - `queueLen`
 - `close`
 - `abort`
+
 
 ## Run tests
 
@@ -58,4 +59,3 @@ nimble test
 ```bash
 nim c -r examples/basic_get.nim
 ```
-

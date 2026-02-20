@@ -12,8 +12,8 @@
 /examples/nimcache/
 
 # Nim binaries
-/flowcurl
-/flowcurl.exe
+/relay
+/relay.exe
 
 # Editor
 .vscode/

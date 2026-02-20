@@ -1,4 +1,4 @@
-import flowcurl
+import relay
 
 proc main() =
   var batch: RequestBatch
