@@ -136,13 +136,13 @@ proc bodyWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): cs
   if total <= 0:
     result = 0
   else:
-    let request = cast[RequestWrap](userdata)
-    if request.isNil:
+    let body = cast[ptr string](userdata)
+    if body.isNil:
       result = csize_t(total)
     else:
-      let start = request.responseBody.len
-      request.responseBody.setLen(start + total)
-      copyMem(addr request.responseBody[start], buffer, total)
+      let start = body[].len
+      body[].setLen(start + total)
+      copyMem(addr body[][start], buffer, total)
       result = csize_t(total)
 
 proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
@@ -151,13 +151,13 @@ proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
   if total <= 0:
     result = 0
   else:
-    let request = cast[RequestWrap](userdata)
-    if request.isNil:
+    let headers = cast[ptr string](userdata)
+    if headers.isNil:
       result = csize_t(total)
     else:
-      let start = request.responseHeadersRaw.len
-      request.responseHeadersRaw.setLen(start + total)
-      copyMem(addr request.responseHeadersRaw[start], buffer, total)
+      let start = headers[].len
+      headers[].setLen(start + total)
+      copyMem(addr headers[][start], buffer, total)
       result = csize_t(total)
 
 proc newResponse(request: RequestWrap): Response {.inline.} =
@@ -199,8 +199,8 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   request.curlHeaders = headerList
   easy.setHeaders(request.curlHeaders)
 
-  easy.setWriteCallback(bodyWriteCb, cast[pointer](request))
-  easy.setHeaderCallback(headerWriteCb, cast[pointer](request))
+  easy.setWriteCallback(bodyWriteCb, cast[pointer](addr request.responseBody))
+  easy.setHeaderCallback(headerWriteCb, cast[pointer](addr request.responseHeadersRaw))
   easy.setTimeoutMs(if request.timeoutMs > 0: request.timeoutMs else: client.defaultTimeoutMs)
   easy.setConnectTimeoutMs(DefaultConnectTimeoutMs)
   easy.setSslVerify(true, true)
