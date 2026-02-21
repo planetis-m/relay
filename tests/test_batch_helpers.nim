@@ -6,9 +6,9 @@ proc main =
   batch.post("http://127.0.0.1:2", body = "x", requestId = 22)
 
   doAssert batch.len == 2
-  doAssert batch[0].verb == "GET"
+  doAssert batch[0].verb == hvGet
   doAssert batch[0].requestId == 11
-  doAssert batch[1].verb == "POST"
+  doAssert batch[1].verb == hvPost
   doAssert batch[1].body == "x"
   doAssert batch[1].requestId == 22
 

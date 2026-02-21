@@ -10,6 +10,14 @@ const
   DefaultConnectTimeoutMs = 10_000
 
 type
+  HttpVerb* = enum
+    hvGet = "GET",
+    hvPost = "POST",
+    hvPut = "PUT",
+    hvPatch = "PATCH",
+    hvDelete = "DELETE",
+    hvHead = "HEAD"
+
   TransportErrorKind* = enum
     teNone,
     teTimeout,
@@ -26,7 +34,7 @@ type
     curlCode*: int
 
   RequestInfo* = object
-    verb*: string
+    verb*: HttpVerb
     url*: string
     requestId*: int64
 
@@ -38,7 +46,7 @@ type
     request*: RequestInfo
 
   BatchRequest* = object
-    verb*: string
+    verb*: HttpVerb
     url*: string
     headers*: HttpHeaders
     body*: string
@@ -52,7 +60,7 @@ type
     requests: seq[BatchRequest]
 
   RequestWrap = ref object
-    verb: string
+    verb: HttpVerb
     url: string
     headers: HttpHeaders
     body: string
@@ -153,7 +161,7 @@ proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
       copyMem(addr headers[][start], buffer, total)
       result = csize_t(total)
 
-proc newResponse(request: RequestWrap): Response {.inline.} =
+proc newResponse(request: sink RequestWrap): Response {.inline.} =
   Response(
     code: 0,
     url: request.url,
@@ -161,7 +169,7 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     body: "",
     request: RequestInfo(
       verb: request.verb,
-      url: request.url,
+      url: move request.url,
       requestId: request.requestId
     )
   )
@@ -174,15 +182,8 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
 
-  let verbUpper = request.verb.toUpperAscii()
-  let verb =
-    if verbUpper.len == 0:
-      "GET"
-    else:
-      verbUpper
-
-  easy.setMethod(verb)
-  easy.setNoBody(verb == "HEAD")
+  easy.setMethod($request.verb)
+  easy.setNoBody(request.verb == hvHead)
   if request.body.len > 0:
     easy.setRequestBody(request.body)
 
@@ -200,8 +201,10 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.setAcceptEncoding("gzip, deflate")
   easy.setFollowRedirects(true, client.maxRedirects)
 
-proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
+proc completionFromCurl(request: sink RequestWrap; easy: Easy; curlCode: CURLcode;
     removeError: string): BatchResult =
+  let rawHeaders = move request.responseHeadersRaw
+  let body = move request.responseBody
   result.response = newResponse(request)
   if removeError.len > 0:
     result.error = newTransportError(teInternal, removeError)
@@ -213,12 +216,12 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     )
   else:
     try:
-      result.response.code = request.easy.responseCode()
-      let effective = request.easy.effectiveUrl()
+      result.response.code = easy.responseCode()
+      let effective = easy.effectiveUrl()
       if effective.len > 0:
         result.response.url = effective
-      result.response.headers = parseHeaders(request.responseHeadersRaw)
-      result.response.body = request.responseBody
+      result.response.headers = parseHeaders(rawHeaders)
+      result.response.body = body
       result.error = noTransportError()
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
@@ -229,14 +232,14 @@ proc flushCanceledLocked(client: Relay; message: string) =
     client.storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, message)))
 
-  for _, req in client.inFlight:
+  for req in client.inFlight.mvalues:
     try:
       client.multi.removeHandle(req.easy)
     except CatchableError:
       discard
     client.availableEasy.add(req.easy)
     client.storeCompletionLocked(
-      (newResponse(req), newTransportError(teCanceled, message)))
+      (newResponse(move req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
 
 proc runEasyLoop(client: Relay): bool =
@@ -251,9 +254,9 @@ proc runEasyLoop(client: Relay): bool =
       let queued = client.queue.popFirst()
       client.storeCompletionLocked(
         (newResponse(queued), newTransportError(teInternal, loopError)))
-    for _, req in client.inFlight:
+    for req in client.inFlight.mvalues:
       client.storeCompletionLocked(
-        (newResponse(req), newTransportError(teInternal, loopError)))
+        (newResponse(move req), newTransportError(teInternal, loopError)))
     client.inFlight.clear()
     client.abortRequested = true
     signal(client.wakeCond)
@@ -278,10 +281,11 @@ proc processDoneMessages(client: Relay) =
         except CatchableError:
           removeError = getCurrentExceptionMsg()
 
-        let completion = completionFromCurl(request, msg.data.result, removeError)
+        let easy = move request.easy
+        let completion = completionFromCurl(request, easy, msg.data.result, removeError)
         acquire(client.lock)
-        if request.easy != nil:
-          client.availableEasy.add(request.easy)
+        if easy != nil:
+          client.availableEasy.add(easy)
         client.storeCompletionLocked(completion)
         release(client.lock)
 
@@ -468,9 +472,9 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) =
   for request in batch.requests.mitems:
     let wrapped = RequestWrap(
       verb: request.verb,
-      url: request.url,
-      headers: request.headers,
-      body: request.body,
+      url: move request.url,
+      headers: move request.headers,
+      body: move request.body,
       requestId: request.requestId,
       timeoutMs: request.timeoutMs,
       responseBody: "",
@@ -529,7 +533,7 @@ proc len*(batch: RequestBatch): int =
 proc `[]`*(batch: RequestBatch; i: int): lent BatchRequest =
   batch.requests[i]
 
-proc addRequest*(batch: var RequestBatch; verb: sink string; url: sink string;
+proc addRequest*(batch: var RequestBatch; verb: HttpVerb; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0) =
   batch.requests.add(BatchRequest(
@@ -544,29 +548,29 @@ proc addRequest*(batch: var RequestBatch; verb: sink string; url: sink string;
 proc get*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
-  batch.addRequest("GET", url, headers, "", requestId, timeoutMs)
+  batch.addRequest(hvGet, url, headers, "", requestId, timeoutMs)
 
 proc post*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0) =
-  batch.addRequest("POST", url, headers, body, requestId, timeoutMs)
+  batch.addRequest(hvPost, url, headers, body, requestId, timeoutMs)
 
 proc put*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0) =
-  batch.addRequest("PUT", url, headers, body, requestId, timeoutMs)
+  batch.addRequest(hvPut, url, headers, body, requestId, timeoutMs)
 
 proc patch*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0) =
-  batch.addRequest("PATCH", url, headers, body, requestId, timeoutMs)
+  batch.addRequest(hvPatch, url, headers, body, requestId, timeoutMs)
 
 proc delete*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
-  batch.addRequest("DELETE", url, headers, "", requestId, timeoutMs)
+  batch.addRequest(hvDelete, url, headers, "", requestId, timeoutMs)
 
 proc head*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
-  batch.addRequest("HEAD", url, headers, "", requestId, timeoutMs)
+  batch.addRequest(hvHead, url, headers, "", requestId, timeoutMs)
