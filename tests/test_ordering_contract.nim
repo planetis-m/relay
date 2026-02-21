@@ -1,6 +1,9 @@
 import relay
 import std/[algorithm, asynchttpserver, asyncdispatch, locks, net]
 
+proc logStep(msg: string) =
+  echo "[ordering] " & msg
+
 type
   TestServer = ref object
     lock: Lock
@@ -12,6 +15,7 @@ type
     thread: Thread[TestServer]
 
 proc testServerMain(server: TestServer) {.thread, raises: [].} =
+  logStep("server thread started")
   proc runServer() {.async.} =
     var http = newAsyncHttpServer()
 
@@ -19,6 +23,7 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
       await req.respond(Http200, "OK")
 
     http.listen(Port(0), "127.0.0.1")
+    logStep("server listening")
 
     acquire(server.lock)
     server.port = http.getPort()
@@ -35,7 +40,9 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
 
       if http.shouldAcceptRequest():
         try:
+          logStep("server accepting request")
           await http.acceptRequest(cb)
+          logStep("server request handled")
         except CatchableError:
           acquire(server.lock)
           let stopping = server.stopRequested
@@ -47,6 +54,7 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
         await sleepAsync(10)
 
     http.close()
+    logStep("server closed")
 
   try:
     waitFor runServer()
@@ -59,6 +67,7 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
     release(server.lock)
 
 proc startTestServer(): TestServer =
+  logStep("startTestServer begin")
   new(result)
   initLock(result.lock)
   initCond(result.readyCond)
@@ -69,10 +78,12 @@ proc startTestServer(): TestServer =
   createThread(result.thread, testServerMain, result)
 
   acquire(result.lock)
+  logStep("startTestServer waiting for ready")
   while not result.ready:
     wait(result.readyCond, result.lock)
   let err = result.startError
   release(result.lock)
+  logStep("startTestServer ready signaled")
 
   if err.len > 0:
     joinThread(result.thread)
@@ -81,6 +92,7 @@ proc startTestServer(): TestServer =
     raise newException(IOError, "test server start failed: " & err)
 
 proc stopTestServer(server: TestServer) =
+  logStep("stopTestServer begin")
   if server.isNil:
     return
 
@@ -92,13 +104,16 @@ proc stopTestServer(server: TestServer) =
   # Wake async accept() so the server loop can observe stopRequested.
   if port != Port(0):
     try:
+      logStep("stopTestServer wake connect")
       var wake = newSocket()
       wake.connect("127.0.0.1", port)
       wake.close()
     except CatchableError:
       discard
 
+  logStep("stopTestServer joining server thread")
   joinThread(server.thread)
+  logStep("stopTestServer joined")
   deinitCond(server.readyCond)
   deinitLock(server.lock)
 
@@ -116,10 +131,12 @@ proc verifyContains(batchResults: ResponseBatch; expectedRequestIds: seq[int64])
   doAssert gotRequestIds == wantRequestIds
 
 proc main =
+  logStep("test main begin")
   let server = startTestServer()
   defer:
     stopTestServer(server)
 
+  logStep("creating relay client")
   var client = newRelay(maxInFlight = 3, defaultTimeoutMs = 2_000, maxRedirects = 5)
   defer: client.close()
 
@@ -129,22 +146,30 @@ proc main =
   batch.get(url, requestId = 2, timeoutMs = 2_000)
   batch.get(url, requestId = 3, timeoutMs = 2_000)
 
+  logStep("calling makeRequests")
   let blockingResults = client.makeRequests(batch)
+  logStep("makeRequests completed")
   verifyContains(blockingResults, @[1'i64, 2, 3])
+  logStep("blocking verify done")
 
   var asyncBatch: RequestBatch
   asyncBatch.get(url, requestId = 4, timeoutMs = 2_000)
   asyncBatch.get(url, requestId = 5, timeoutMs = 2_000)
   asyncBatch.get(url, requestId = 6, timeoutMs = 2_000)
+  logStep("starting async requests")
   client.startRequests(asyncBatch)
 
   var asyncResults: ResponseBatch
   for _ in 0..<3:
     var item: BatchResult
+    logStep("waiting for async result")
     doAssert client.waitForResult(item)
+    logStep("received async result id=" & $item.response.request.requestId)
     asyncResults.add(item)
 
   verifyContains(asyncResults, @[4'i64, 5, 6])
+  logStep("async verify done")
+  logStep("test main end")
 
 when isMainModule:
   main()
