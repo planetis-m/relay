@@ -196,8 +196,8 @@ proc addHeader*(list: var Slist; headerLine: string) =
   if list.raw.isNil:
     raise newException(IOError, "curl_slist_append failed")
 
-proc handleKey*(easy: Easy): pointer =
-  cast[pointer](easy.raw)
+proc handleKey*(easy: Easy): uint =
+  cast[uint](pointer(easy.raw))
 
-proc handleKey*(msg: CURLMsg): pointer =
-  cast[pointer](msg.easy_handle)
+proc handleKey*(msg: CURLMsg): uint =
+  cast[uint](pointer(msg.easy_handle))
