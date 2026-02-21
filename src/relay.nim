@@ -71,9 +71,7 @@ type
     easy: Easy
     curlHeaders: Slist
 
-  Relay* = ref RelayObj
-
-  RelayObj = object
+  Relay* = ref object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
