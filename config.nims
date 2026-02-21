@@ -20,6 +20,7 @@ else:
   switch("passL", "-Wl,-rpath,\\$ORIGIN")
 
 when defined(threadSanitizer) or defined(addressSanitizer):
+  switch("define", "useMalloc")
   switch("debugger", "native")
   switch("define", "noSignalHandler")
 
