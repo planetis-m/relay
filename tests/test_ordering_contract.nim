@@ -21,9 +21,7 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
     var http = newAsyncHttpServer()
 
     proc cb(req: Request) {.async, gcsafe.} =
-      logStep("server cb start path=" & req.url.path)
       await req.respond(Http200, "OK")
-      logStep("server cb done")
 
     http.listen(Port(0), "127.0.0.1")
     logStep("server listening")
