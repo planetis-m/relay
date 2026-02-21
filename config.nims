@@ -13,6 +13,7 @@ when defined(macosx):
   switch("passL", "-L" & staticExec("brew --prefix curl") & "/lib")
 elif defined(windows):
   switch("cc", "vcc")
+  switch("define", "useMalloc")
   let vcpkgRoot = getEnv("VCPKG_ROOT", "C:/vcpkg/installed/x64-windows-release")
   switch("passC", "-I" & vcpkgRoot & "/include")
   switch("passL", vcpkgRoot & "/lib/libcurl.lib")
