@@ -41,8 +41,11 @@ proc main =
   checkResult(client.head(UnreachableA, requestId = 206, timeoutMs = 200), hvHead, 206, UnreachableA)
 
   var inFlightBatch: RequestBatch
-  inFlightBatch.get(UnreachableA, requestId = 301, timeoutMs = 200)
+  let pendingCount = 8
+  for i in 0..<pendingCount:
+    inFlightBatch.get(UnreachableA, requestId = 301 + i.int64, timeoutMs = 200)
   client.startRequests(inFlightBatch)
+  client.clearQueue()
 
   var raisedBusy = false
   try:
@@ -58,8 +61,9 @@ proc main =
     raisedBusy = true
   doAssert raisedBusy, "makeRequest should reject a non-idle client"
 
-  var drained: RequestResult
-  doAssert client.waitForResult(drained)
+  for _ in 0..<pendingCount:
+    var drained: RequestResult
+    doAssert client.waitForResult(drained)
 
 when isMainModule:
   main()

@@ -495,7 +495,7 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) =
     for request in batch.requests.mitems:
       client.queue.addLast(wrapRequest(move request))
 
-proc startRequest(client: Relay; request: sink RequestSpec) =
+proc startRequest*(client: Relay; request: sink RequestSpec) =
   withOpenQueue(client):
     client.queue.addLast(wrapRequest(request))
 

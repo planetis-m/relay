@@ -158,6 +158,7 @@ proc `[]=`*(headers: var HttpHeaders; key, value: string)
 ### Executing Requests
 
 ```nim
+proc startRequest*(client: Relay; request: sink RequestSpec)
 proc startRequests*(client: Relay; batch: sink RequestBatch)
 proc waitForResult*(client: Relay; outResult: var RequestResult): bool
 proc pollForResult*(client: Relay; outResult: var RequestResult): bool
@@ -177,6 +178,7 @@ proc head*(client: Relay; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0): RequestResult
 ```
 
+- `startRequest` is non-blocking enqueue API for a single request.
 - `makeRequests` is blocking convenience API.
   - Requires an idle client (no queued/in-flight/undrained prior results).
 - `makeRequest` is blocking single-request API.
