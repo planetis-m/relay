@@ -248,10 +248,15 @@ proc flushCanceledLocked(client: Relay; message: string) =
 proc runEasyLoop(client: Relay): bool =
   result = true
   try:
-    discard client.multi.perform()
-    discard client.multi.poll(MultiWaitMaxMs)
+    relayTraceLog("runEasyLoop perform begin")
+    let running = client.multi.perform()
+    relayTraceLog("runEasyLoop perform end running=" & $running)
+    relayTraceLog("runEasyLoop poll begin timeoutMs=" & $MultiWaitMaxMs)
+    let numfds = client.multi.poll(MultiWaitMaxMs)
+    relayTraceLog("runEasyLoop poll end numfds=" & $numfds)
   except CatchableError:
     let loopError = getCurrentExceptionMsg()
+    relayTraceLog("runEasyLoop error: " & loopError)
     acquire(client.lock)
     while client.queue.len > 0:
       let queued = client.queue.popFirst()
