@@ -9,10 +9,6 @@ const
   MultiWaitMaxMs = 250
   DefaultConnectTimeoutMs = 10_000
 
-template relayTraceLog(msg: string) =
-  when defined(relayTrace):
-    echo "[relay] " & msg
-
 type
   HttpVerb* = enum
     hvGet = "GET",
@@ -178,8 +174,6 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
   )
 
 proc storeCompletionLocked(client: Relay; item: sink BatchResult) =
-  relayTraceLog("storeCompletionLocked id=" & $item.response.request.requestId &
-    " err=" & $item.error.kind)
   client.readyResults.addLast(item)
   signal(client.resultCond)
 
@@ -278,11 +272,7 @@ proc processDoneMessages(client: Relay) =
       found = client.inFlight.pop(key, request)
       release(client.lock)
 
-      relayTraceLog("done msg key=" & $cast[uint](key) & " found=" & $found)
-
       if found and request != nil:
-        relayTraceLog("processing done id=" & $request.requestId &
-          " curlCode=" & $int(msg.data.result))
         var removeError = ""
         try:
           client.multi.removeHandle(msg)
@@ -296,7 +286,6 @@ proc processDoneMessages(client: Relay) =
         client.storeCompletionLocked(completion)
         release(client.lock)
       elif not found:
-        relayTraceLog("done msg missing inFlight entry; requesting abort")
         acquire(client.lock)
         # Avoid hanging callers if a completion cannot be matched to inFlight.
         client.abortRequested = true
@@ -329,12 +318,8 @@ proc dispatchQueuedRequests(client: Relay) =
 
       acquire(client.lock)
       if dispatched:
-        relayTraceLog("dispatched id=" & $request.requestId &
-          " key=" & $cast[uint](handleKey(easy)))
         client.inFlight[handleKey(easy)] = request
       else:
-        relayTraceLog("dispatch failed id=" & $request.requestId &
-          " err=" & dispatchError)
         client.availableEasy.add(easy)
         client.storeCompletionLocked(
           (newResponse(request), newTransportError(teInternal, dispatchError)))

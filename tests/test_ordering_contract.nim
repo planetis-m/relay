@@ -1,4 +1,3 @@
-{.define: relayTrace.}
 import relay
 import std/[algorithm, asynchttpserver, asyncdispatch, locks, net]
 
