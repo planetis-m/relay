@@ -275,7 +275,7 @@ proc processDoneMessages(client: Relay) =
   var msg: CURLMsg
   var msgsInQueue = 0
   relayTraceLog("processDoneMessages enter")
-  if client.multi.tryInfoRead(msg, msgsInQueue):
+  while client.multi.tryInfoRead(msg, msgsInQueue):
     relayTraceLog("processDoneMessages msg=" & $msg.msg &
       " msgsInQueue=" & $msgsInQueue)
     if msg.msg == CURLMSG_DONE:
@@ -312,7 +312,6 @@ proc processDoneMessages(client: Relay) =
         release(client.lock)
     else:
       relayTraceLog("processDoneMessages skipping non-DONE msg=" & $msg.msg)
-    relayTraceLog("processDoneMessages remaining msgsInQueue=" & $msgsInQueue)
   relayTraceLog("processDoneMessages exit")
 
 proc dispatchQueuedRequests(client: Relay) =
