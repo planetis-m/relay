@@ -22,9 +22,10 @@ proc modeTag(flags: string): string =
 
 proc runSuite(flags: string) =
   let tag = modeTag(flags)
-  runTest "nim c -r" & flags & " --nimcache:.nimcache/" & tag & "/test_batch_helpers tests/test_batch_helpers.nim"
-  runTest "nim c -r" & flags & " --nimcache:.nimcache/" & tag & "/test_ordering_contract tests/test_ordering_contract.nim"
-  runTest "nim c -r" & flags & " --nimcache:.nimcache/" & tag & "/test_lifecycle_contracts tests/test_lifecycle_contracts.nim"
+  let testFlags = flags & " -d:useMalloc"
+  runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_batch_helpers tests/test_batch_helpers.nim"
+  runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_ordering_contract tests/test_ordering_contract.nim"
+  runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_lifecycle_contracts tests/test_lifecycle_contracts.nim"
 
 task test, "Run Relay test suite":
   runSuite(modeFlags())

@@ -37,7 +37,7 @@ proc stallServerMain(server: StallServer) {.thread, raises: [].} =
       if shouldStop:
         break
       sleep(10)
-  except CatchableError:
+  except Exception:
     acquire(server.lock)
     server.startError = getCurrentExceptionMsg()
     if not server.ready:
