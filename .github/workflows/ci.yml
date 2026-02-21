@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Run tests
+        run: nim test tests/ci.nims
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies
+        run: brew install curl
+
+      - name: Run tests
+        run: nim test tests/ci.nims
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies (vcpkg)
+        uses: johnwason/vcpkg-action@v7
+        with:
+          pkgs: curl
+          triplet: x64-windows-release
+          token: ${{ github.token }}
+
+      - name: Run tests
+        shell: pwsh
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\vcpkg\installed\x64-windows-release
+        run: |
+          $env:PATH = "$env:VCPKG_ROOT\bin;" + $env:PATH
+          nim test tests/ci.nims
