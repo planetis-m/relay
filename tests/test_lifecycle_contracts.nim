@@ -78,12 +78,15 @@ proc stopStallServer(server: StallServer) =
     return
   acquire(server.lock)
   server.stopRequested = true
-  let listener = server.listener
+  let port = server.port
   release(server.lock)
 
-  if not listener.isNil:
+  # Wake accept() without cross-thread close; listener is closed by server thread.
+  if port != Port(0):
     try:
-      listener.close()
+      var wake = newSocket()
+      wake.connect("127.0.0.1", port)
+      wake.close()
     except CatchableError:
       discard
 

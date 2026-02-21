@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [master, main]
+    branches: [master]
   pull_request:
-    branches: [master, main]
+    branches: [master]
   workflow_dispatch:
 
 jobs:
@@ -27,6 +27,49 @@ jobs:
 
       - name: Run tests
         run: nim test tests/ci.nims
+
+  linux-asan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Run tests (ASan)
+        env:
+          ASAN_OPTIONS: detect_leaks=0
+          LSAN_OPTIONS: detect_leaks=0
+        run: nim asan tests/ci.nims
+
+  linux-tsan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: stable
+          repo-token: ${{ github.token }}
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Run tests (TSan)
+        run: nim tsan tests/ci.nims
 
   macos:
     runs-on: macos-latest
