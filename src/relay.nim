@@ -274,7 +274,10 @@ proc runEasyLoop(client: Relay): bool =
 proc processDoneMessages(client: Relay) =
   var msg: CURLMsg
   var msgsInQueue = 0
+  relayTraceLog("processDoneMessages enter")
   while client.multi.tryInfoRead(msg, msgsInQueue):
+    relayTraceLog("processDoneMessages msg=" & $msg.msg &
+      " msgsInQueue=" & $msgsInQueue)
     if msg.msg == CURLMSG_DONE:
       var request: RequestWrap
       let key = handleKey(msg)
@@ -307,6 +310,9 @@ proc processDoneMessages(client: Relay) =
         client.abortRequested = true
         signal(client.wakeCond)
         release(client.lock)
+    else:
+      relayTraceLog("processDoneMessages skipping non-DONE msg=" & $msg.msg)
+  relayTraceLog("processDoneMessages exit")
 
 proc dispatchQueuedRequests(client: Relay) =
   var done = false
