@@ -71,11 +71,11 @@ type
     easy: Easy
     curlHeaders: Slist
 
-  Relay* = ref object
+  RelayObj = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
-    thread: Thread[Relay]
+    thread: Thread[ptr RelayObj] # break cycle
     workerRunning: bool
     closeRequested: bool
     abortRequested: bool
@@ -88,6 +88,7 @@ type
     queue: Deque[RequestWrap]
     inFlight: Table[uint, RequestWrap]
     readyResults: Deque[BatchResult]
+  Relay* = ref RelayObj
 
 proc noTransportError(): TransportError {.inline.} =
   TransportError(kind: teNone, message: "", curlCode: 0)
@@ -330,7 +331,8 @@ proc waitForWorkOrClose(client: Relay): bool =
     result = false
   release(client.lock)
 
-proc workerMain(client: Relay) {.thread, raises: [].} =
+proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
+  let client = cast[Relay](clientPtr)
   while true:
     dispatchQueuedRequests(client)
 
@@ -379,7 +381,7 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
   for _ in 0..<result.maxInFlight:
     result.availableEasy.add(initEasy())
 
-  createThread(result.thread, workerMain, result)
+  createThread(result.thread, workerMain, cast[ptr RelayObj](result))
 
 proc close*(client: Relay) =
   if client.isNil:
