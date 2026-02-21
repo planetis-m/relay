@@ -161,7 +161,7 @@ proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
       copyMem(addr headers[][start], buffer, total)
       result = csize_t(total)
 
-proc newResponse(request: sink RequestWrap): Response {.inline.} =
+proc newResponse(request: RequestWrap): Response {.inline.} =
   Response(
     code: 0,
     url: request.url,
@@ -201,10 +201,8 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.setAcceptEncoding("gzip, deflate")
   easy.setFollowRedirects(true, client.maxRedirects)
 
-proc completionFromCurl(request: sink RequestWrap; easy: Easy; curlCode: CURLcode;
+proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     removeError: string): BatchResult =
-  let rawHeaders = move request.responseHeadersRaw
-  let body = move request.responseBody
   result.response = newResponse(request)
   if removeError.len > 0:
     result.error = newTransportError(teInternal, removeError)
@@ -216,12 +214,12 @@ proc completionFromCurl(request: sink RequestWrap; easy: Easy; curlCode: CURLcod
     )
   else:
     try:
-      result.response.code = easy.responseCode()
-      let effective = easy.effectiveUrl()
+      result.response.code = request.easy.responseCode()
+      let effective = request.easy.effectiveUrl()
       if effective.len > 0:
         result.response.url = effective
-      result.response.headers = parseHeaders(rawHeaders)
-      result.response.body = body
+      result.response.headers = parseHeaders(request.responseHeadersRaw)
+      result.response.body = move request.responseBody
       result.error = noTransportError()
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
@@ -239,7 +237,7 @@ proc flushCanceledLocked(client: Relay; message: string) =
       discard
     client.availableEasy.add(req.easy)
     client.storeCompletionLocked(
-      (newResponse(move req), newTransportError(teCanceled, message)))
+      (newResponse(req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
 
 proc runEasyLoop(client: Relay): bool =
@@ -256,7 +254,7 @@ proc runEasyLoop(client: Relay): bool =
         (newResponse(queued), newTransportError(teInternal, loopError)))
     for req in client.inFlight.mvalues:
       client.storeCompletionLocked(
-        (newResponse(move req), newTransportError(teInternal, loopError)))
+        (newResponse(req), newTransportError(teInternal, loopError)))
     client.inFlight.clear()
     client.abortRequested = true
     signal(client.wakeCond)
@@ -281,11 +279,10 @@ proc processDoneMessages(client: Relay) =
         except CatchableError:
           removeError = getCurrentExceptionMsg()
 
-        let easy = move request.easy
-        let completion = completionFromCurl(request, easy, msg.data.result, removeError)
+        let completion = completionFromCurl(request, msg.data.result, removeError)
         acquire(client.lock)
-        if easy != nil:
-          client.availableEasy.add(easy)
+        if request.easy != nil:
+          client.availableEasy.add(request.easy)
         client.storeCompletionLocked(completion)
         release(client.lock)
 
