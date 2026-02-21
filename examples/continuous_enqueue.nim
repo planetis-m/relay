@@ -1,51 +1,40 @@
 import relay
 import std/os
 
-proc main() =
+proc main =
   var client = newRelay(maxInFlight = 4, defaultTimeoutMs = 1_500, maxRedirects = 5)
-  defer:
-    client.close()
+  defer: client.close()
 
   let urls = [
     "https://example.com",
     "https://example.org",
     "https://www.iana.org"
   ]
-  let iterations = 4
+  let totalRequests = 12
   let requestsPerBatch = 3
 
   var submitted = 0
   var completed = 0
   var nextRequestId = 1'i64
 
-  # Every loop iteration creates a new batch with multiple GET requests.
-  for loopIdx in 0..<iterations:
-    var batch: RequestBatch
-    for i in 0..<requestsPerBatch:
-      let url = urls[(loopIdx + i) mod urls.len]
-      batch.get(url, requestId = nextRequestId, timeoutMs = 1_500)
-      inc nextRequestId
+  while completed < totalRequests:
+    # Producer step: occasionally submit a fresh batch with multiple requests.
+    if submitted < totalRequests and (client.queueLen() + client.numInFlight()) < 6:
+      var batch: RequestBatch
+      var added = 0
+      while added < requestsPerBatch and submitted < totalRequests:
+        let url = urls[submitted mod urls.len]
+        batch.get(url, requestId = nextRequestId, timeoutMs = 1_500)
+        inc nextRequestId
+        inc submitted
+        inc added
 
-    client.startRequests(batch)
-    submitted += requestsPerBatch
-    echo "submitted loop=", loopIdx + 1, " batchSize=", requestsPerBatch,
-      " totalSubmitted=", submitted
+      client.startRequests(batch)
+      echo "submitted batchSize=", added, " totalSubmitted=", submitted
 
+    # Consumer step: drain whichever result is ready (from any batch).
     var item: BatchResult
-    while client.pollForResult(item):
-      inc completed
-      if item.error.kind == teNone:
-        echo "completed id=", item.response.request.requestId,
-          " status=", item.response.code
-      else:
-        echo "completed id=", item.response.request.requestId,
-          " error=", item.error.kind
-
-    sleep(80)
-
-  while completed < submitted:
-    var item: BatchResult
-    if client.waitForResult(item):
+    if client.pollForResult(item):
       inc completed
       if item.error.kind == teNone:
         echo "completed id=", item.response.request.requestId,
@@ -54,7 +43,7 @@ proc main() =
         echo "completed id=", item.response.request.requestId,
           " error=", item.error.kind
     else:
-      break
+      sleep(10)
 
   echo "done submitted=", submitted, " completed=", completed
 
