@@ -346,10 +346,16 @@ proc dispatchQueuedRequests(client: Relay) =
       release(client.lock)
 
 proc waitForWorkOrClose(client: Relay): bool =
+  relayTraceLog("waitForWorkOrClose enter")
   result = true
   acquire(client.lock)
+  relayTraceLog("waitForWorkOrClose state queue=" & $client.queue.len &
+    " inFlight=" & $client.inFlight.len &
+    " abort=" & $client.abortRequested &
+    " close=" & $client.closeRequested)
   while not client.abortRequested and not client.closeRequested and
       client.queue.len == 0 and client.inFlight.len == 0:
+    relayTraceLog("waitForWorkOrClose sleeping")
     wait(client.wakeCond, client.lock)
 
   if client.abortRequested:
@@ -357,15 +363,24 @@ proc waitForWorkOrClose(client: Relay): bool =
   elif client.closeRequested and client.queue.len == 0 and client.inFlight.len == 0:
     result = false
   release(client.lock)
+  relayTraceLog("waitForWorkOrClose exit result=" & $result)
 
 proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
   let client = cast[Relay](clientPtr)
+  var iter = 0
   while true:
+    inc iter
+    relayTraceLog("worker iter=" & $iter & " dispatchQueuedRequests")
     dispatchQueuedRequests(client)
 
     acquire(client.lock)
     let hasInflight = client.inFlight.len > 0
     let shouldAbort = client.abortRequested
+    relayTraceLog("worker iter=" & $iter &
+      " after-dispatch queue=" & $client.queue.len &
+      " inFlight=" & $client.inFlight.len &
+      " hasInflight=" & $hasInflight &
+      " abort=" & $shouldAbort)
     release(client.lock)
 
     if shouldAbort:
