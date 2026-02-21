@@ -86,7 +86,7 @@ type
     multi: Multi
     availableEasy: seq[Easy]
     queue: Deque[RequestWrap]
-    inFlight: Table[uint, RequestWrap]
+    inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[BatchResult]
   Relay* = ref RelayObj
 
@@ -267,11 +267,12 @@ proc processDoneMessages(client: Relay) =
     if msg.msg == CURLMSG_DONE:
       var request: RequestWrap
       let key = handleKey(msg)
+      var found = false
       acquire(client.lock)
-      discard client.inFlight.pop(key, request)
+      found = client.inFlight.pop(key, request)
       release(client.lock)
 
-      if request != nil:
+      if found and request != nil:
         var removeError = ""
         try:
           client.multi.removeHandle(msg)
@@ -283,6 +284,12 @@ proc processDoneMessages(client: Relay) =
         if request.easy != nil:
           client.availableEasy.add(request.easy)
         client.storeCompletionLocked(completion)
+        release(client.lock)
+      elif not found:
+        acquire(client.lock)
+        # Avoid hanging callers if a completion cannot be matched to inFlight.
+        client.abortRequested = true
+        signal(client.wakeCond)
         release(client.lock)
 
 proc dispatchQueuedRequests(client: Relay) =
@@ -377,7 +384,7 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
   result.multi = initMulti()
   result.queue = initDeque[RequestWrap]()
   result.readyResults = initDeque[BatchResult]()
-  result.inFlight = initTable[uint, RequestWrap]()
+  result.inFlight = initTable[pointer, RequestWrap]()
   for _ in 0..<result.maxInFlight:
     result.availableEasy.add(initEasy())
 
