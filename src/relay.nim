@@ -86,7 +86,7 @@ type
     multi: Multi
     availableEasy: seq[Easy]
     queue: Deque[RequestWrap]
-    inFlight: Table[uint, RequestWrap]
+    inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[BatchResult]
   Relay* = ref RelayObj
 
@@ -377,7 +377,7 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
   result.multi = initMulti()
   result.queue = initDeque[RequestWrap]()
   result.readyResults = initDeque[BatchResult]()
-  result.inFlight = initTable[uint, RequestWrap]()
+  result.inFlight = initTable[pointer, RequestWrap]()
   for _ in 0..<result.maxInFlight:
     result.availableEasy.add(initEasy())
 
