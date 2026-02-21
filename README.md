@@ -68,6 +68,7 @@ Public API is exported from `src/relay.nim`.
 ### Core Types
 
 - `HttpHeaders = seq[tuple[name: string, value: string]]`
+- `HttpVerb = enum hvGet = "GET", hvPost = "POST", hvPut = "PUT", hvPatch = "PATCH", hvDelete = "DELETE", hvHead = "HEAD"`
 - `BatchRequest`: request definition (`verb`, `url`, `headers`, `body`, `requestId`,
   `timeoutMs`)
 - `RequestBatch`: mutable batch builder
@@ -99,7 +100,8 @@ proc abort*(client: Relay)
 ### Building Request Batches
 
 ```nim
-proc addRequest*(batch: var RequestBatch; verb, url: string; headers = emptyHttpHeaders();
+proc addRequest*(batch: var RequestBatch; verb: HttpVerb; url: string;
+    headers = emptyHttpHeaders();
     body = ""; requestId = 0'i64; timeoutMs = 0)
 proc get*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0)
