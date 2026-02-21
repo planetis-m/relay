@@ -1,5 +1,5 @@
 # Package
-version = "0.1.5"
+version = "0.2.0"
 author = "planetis"
 description = "Relay: parallel HTTP batching for Nim"
 license = "MIT"
@@ -9,5 +9,6 @@ requires "nim >= 2.2.0"
 
 task test, "Run Relay tests":
   exec "nim c -r tests/test_batch_helpers.nim"
+  exec "nim c -r tests/test_single_request_helpers.nim"
   exec "nim c -r tests/test_ordering_contract.nim"
   exec "nim c -r tests/test_lifecycle_contracts.nim"

@@ -12,7 +12,7 @@ proc main =
   client.startRequests(batch)
 
   for _ in 0..<3:
-    var item: BatchResult
+    var item: RequestResult
     if client.waitForResult(item):
       if item.error.kind == teNone:
         echo item.response.request.requestId, " -> ", item.response.code

@@ -35,6 +35,21 @@ for item in client.makeRequests(batch):
       " ", item.error.message
 ```
 
+## Quick Start (Blocking Single Request)
+
+```nim
+import relay
+
+var client = newRelay()
+defer: client.close()
+
+let item = client.get("https://example.com", requestId = 7)
+if item.error.kind == teNone:
+  echo item.response.request.requestId, " status=", item.response.code
+else:
+  echo item.error.kind, " ", item.error.message
+```
+
 ## Async Pattern (`startRequests` + drain)
 
 Use this when your app has its own scheduling loop.
@@ -52,7 +67,7 @@ client.startRequests(batch)
 
 var pending = batch.len
 while pending > 0:
-  var item: BatchResult
+  var item: RequestResult
   if client.waitForResult(item):
     dec pending
     if item.error.kind == teNone:
@@ -69,11 +84,11 @@ Public API is exported from `src/relay.nim`.
 
 - `HttpHeaders = seq[tuple[name: string, value: string]]`
 - `HttpVerb = enum hvGet = "GET", hvPost = "POST", hvPut = "PUT", hvPatch = "PATCH", hvDelete = "DELETE", hvHead = "HEAD"`
-- `BatchRequest`: request definition (`verb`, `url`, `headers`, `body`, `requestId`,
+- `RequestSpec`: request definition (`verb`, `url`, `headers`, `body`, `requestId`,
   `timeoutMs`)
 - `RequestBatch`: mutable batch builder
-- `BatchResult = tuple[response: Response, error: TransportError]`
-- `ResponseBatch = seq[BatchResult]`
+- `RequestResult = tuple[response: Response, error: TransportError]`
+- `RequestResults = seq[RequestResult]`
 - `TransportErrorKind`:
   - `teNone`
   - `teTimeout`
@@ -133,7 +148,7 @@ Utilities:
 
 ```nim
 proc len*(batch: RequestBatch): int
-proc `[]`*(batch: RequestBatch; i: int): lent BatchRequest
+proc `[]`*(batch: RequestBatch; i: int): lent RequestSpec
 proc emptyHttpHeaders*(): HttpHeaders
 proc contains*(headers: HttpHeaders; key: string): bool
 proc `[]`*(headers: HttpHeaders; key: string): string
@@ -144,16 +159,49 @@ proc `[]=`*(headers: var HttpHeaders; key, value: string)
 
 ```nim
 proc startRequests*(client: Relay; batch: sink RequestBatch)
-proc waitForResult*(client: Relay; outResult: var BatchResult): bool
-proc pollForResult*(client: Relay; outResult: var BatchResult): bool
-proc makeRequests*(client: Relay; batch: sink RequestBatch): ResponseBatch
+proc waitForResult*(client: Relay; outResult: var RequestResult): bool
+proc pollForResult*(client: Relay; outResult: var RequestResult): bool
+proc makeRequests*(client: Relay; batch: sink RequestBatch): RequestResults
+proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult
+proc get*(client: Relay; url: string; headers = emptyHttpHeaders();
+    requestId = 0'i64; timeoutMs = 0): RequestResult
+proc post*(client: Relay; url: string; headers = emptyHttpHeaders();
+    body = ""; requestId = 0'i64; timeoutMs = 0): RequestResult
+proc put*(client: Relay; url: string; headers = emptyHttpHeaders();
+    body = ""; requestId = 0'i64; timeoutMs = 0): RequestResult
+proc patch*(client: Relay; url: string; headers = emptyHttpHeaders();
+    body = ""; requestId = 0'i64; timeoutMs = 0): RequestResult
+proc delete*(client: Relay; url: string; headers = emptyHttpHeaders();
+    requestId = 0'i64; timeoutMs = 0): RequestResult
+proc head*(client: Relay; url: string; headers = emptyHttpHeaders();
+    requestId = 0'i64; timeoutMs = 0): RequestResult
 ```
 
 - `makeRequests` is blocking convenience API.
   - Requires an idle client (no queued/in-flight/undrained prior results).
+- `makeRequest` is blocking single-request API.
+  - Requires an idle client (same as `makeRequests`).
 - `startRequests` is non-blocking enqueue API.
 - `waitForResult` blocks until one result is available or worker stops.
 - `pollForResult` returns immediately.
+
+### Single Request APIs
+
+`makeRequest` executes one `RequestSpec` and returns one `RequestResult`:
+
+```nim
+let single = client.makeRequest(RequestSpec(
+  verb: hvPost,
+  url: "https://example.com/api",
+  headers: emptyHttpHeaders(),
+  body: """{"x":1}""",
+  requestId: 42,
+  timeoutMs: 2_000
+))
+```
+
+Client verb helpers (`client.get/post/put/patch/delete/head`) are convenience
+wrappers around `makeRequest`.
 
 ### Queue / State Helpers
 
@@ -170,7 +218,7 @@ proc queueLen*(client: Relay): int
 ## Behavioral Notes
 
 - Results are delivered in completion order, not submission order.
-- Every request yields exactly one `BatchResult`.
+- Every request yields exactly one `RequestResult`.
 - `Response.request.requestId` echoes the request id for correlation.
 - Redirects are enabled by default (`maxRedirects`).
 - Response body is automatically decoded when server uses gzip/deflate.

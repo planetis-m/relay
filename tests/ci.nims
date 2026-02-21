@@ -24,6 +24,7 @@ proc runSuite(flags: string) =
   let tag = modeTag(flags)
   let testFlags = flags & " -d:useMalloc"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_batch_helpers tests/test_batch_helpers.nim"
+  runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_single_request_helpers tests/test_single_request_helpers.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_ordering_contract tests/test_ordering_contract.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_lifecycle_contracts tests/test_lifecycle_contracts.nim"
 

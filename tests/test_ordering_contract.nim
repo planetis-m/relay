@@ -105,7 +105,7 @@ proc stopTestServer(server: TestServer) =
 proc testUrl(server: TestServer): string =
   "http://127.0.0.1:" & $int(server.port) & "/ok"
 
-proc verifyContains(batchResults: ResponseBatch; expectedRequestIds: seq[int64]) =
+proc verifyContains(batchResults: RequestResults; expectedRequestIds: seq[int64]) =
   var gotRequestIds: seq[int64]
   var wantRequestIds = expectedRequestIds
   doAssert batchResults.len == expectedRequestIds.len
@@ -138,9 +138,9 @@ proc main =
   asyncBatch.get(url, requestId = 6, timeoutMs = 2_000)
   client.startRequests(asyncBatch)
 
-  var asyncResults: ResponseBatch
+  var asyncResults: RequestResults
   for _ in 0..<3:
-    var item: BatchResult
+    var item: RequestResult
     doAssert client.waitForResult(item)
     asyncResults.add(item)
 
