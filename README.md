@@ -97,6 +97,18 @@ proc abort*(client: Relay)
 - `close` waits for queued/in-flight work to finish, then shuts down cleanly.
 - `abort` cancels pending/in-flight work and stops quickly.
 
+### Threading & Lifecycle Constraints
+
+- Memory model: this repo pins `atomicArc` in `config.nims`.
+  Relay shares `ref` objects (`Relay`, `RequestWrap`) across threads, so atomic
+  refcounting is the safe default.
+- Relay ownership: treat a `Relay` instance as single-owner from the creating
+  thread.
+- `close` / `abort`: call from the same thread that created the `Relay`; do not
+  invoke them concurrently from other threads.
+- Relay instances: current lifecycle uses global libcurl init/cleanup per
+  instance. Prefer a single active `Relay` instance in a process.
+
 ### Building Request Batches
 
 ```nim
