@@ -33,7 +33,7 @@ proc main =
       echo "submitted batchSize=", added, " totalSubmitted=", submitted
 
     # Consumer step: drain whichever result is ready (from any batch).
-    var item: BatchResult
+    var item: RequestResult
     if client.pollForResult(item):
       inc completed
       if item.error.kind == teNone:

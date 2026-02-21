@@ -45,7 +45,7 @@ type
     body*: string
     request*: RequestInfo
 
-  BatchRequest* = object
+  RequestSpec* = object
     verb*: HttpVerb
     url*: string
     headers*: HttpHeaders
@@ -53,11 +53,11 @@ type
     requestId*: int64
     timeoutMs*: int
 
-  BatchResult* = tuple[response: Response, error: TransportError]
-  ResponseBatch* = seq[BatchResult]
+  RequestResult* = tuple[response: Response, error: TransportError]
+  RequestResults* = seq[RequestResult]
 
   RequestBatch* = object
-    requests: seq[BatchRequest]
+    requests: seq[RequestSpec]
 
   RequestWrap = ref object
     verb: HttpVerb
@@ -87,13 +87,13 @@ type
     availableEasy: seq[Easy]
     queue: Deque[RequestWrap]
     inFlight: Table[pointer, RequestWrap]
-    readyResults: Deque[BatchResult]
+    readyResults: Deque[RequestResult]
   Relay* = ref RelayObj
 
 proc noTransportError(): TransportError {.inline.} =
   TransportError(kind: teNone, message: "", curlCode: 0)
 
-proc newTransportError(kind: TransportErrorKind; message: string;
+proc newTransportError(kind: TransportErrorKind; message: sink string;
     curlCode = 0): TransportError {.inline.} =
   TransportError(kind: kind, message: message, curlCode: curlCode)
 
@@ -173,7 +173,7 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     )
   )
 
-proc storeCompletionLocked(client: Relay; item: sink BatchResult) =
+proc storeCompletionLocked(client: Relay; item: sink RequestResult) =
   client.readyResults.addLast(item)
   signal(client.resultCond)
 
@@ -201,7 +201,7 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.setFollowRedirects(true, client.maxRedirects)
 
 proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
-    removeError: string): BatchResult =
+    removeError: sink string): RequestResult =
   result.response = newResponse(request)
   if removeError.len > 0:
     result.error = newTransportError(teInternal, removeError)
@@ -223,13 +223,13 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: Relay; message: string) =
+proc flushCanceledLocked(client: Relay; message: sink string) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
     client.storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, message)))
 
-  for req in client.inFlight.mvalues:
+  for req in values(client.inFlight):
     try:
       client.multi.removeHandle(req.easy)
     except CatchableError:
@@ -251,7 +251,7 @@ proc runEasyLoop(client: Relay): bool =
       let queued = client.queue.popFirst()
       client.storeCompletionLocked(
         (newResponse(queued), newTransportError(teInternal, loopError)))
-    for req in client.inFlight.mvalues:
+    for req in values(client.inFlight):
       client.storeCompletionLocked(
         (newResponse(req), newTransportError(teInternal, loopError)))
     client.inFlight.clear()
@@ -376,7 +376,7 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
   result.closed = false
   result.multi = initMulti()
   result.queue = initDeque[RequestWrap]()
-  result.readyResults = initDeque[BatchResult]()
+  result.readyResults = initDeque[RequestResult]()
   result.inFlight = initTable[pointer, RequestWrap]()
   for _ in 0..<result.maxInFlight:
     result.availableEasy.add(initEasy())
@@ -460,30 +460,46 @@ proc clearQueue*(client: Relay) =
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
-proc startRequests*(client: Relay; batch: sink RequestBatch) =
+proc clientIsBusy(client: Relay): bool =
+  acquire(client.lock)
+  result =
+    client.queue.len > 0 or
+    client.inFlight.len > 0 or
+    client.readyResults.len > 0
+  release(client.lock)
+
+proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
+  RequestWrap(
+    verb: request.verb,
+    url: move request.url,
+    headers: move request.headers,
+    body: move request.body,
+    requestId: request.requestId,
+    timeoutMs: request.timeoutMs,
+    responseBody: "",
+    responseHeadersRaw: "",
+    easy: nil
+  )
+
+template withOpenQueue(client: Relay; body: untyped) =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
     raise newException(IOError, "client is closed")
-
-  for request in batch.requests.mitems:
-    let wrapped = RequestWrap(
-      verb: request.verb,
-      url: move request.url,
-      headers: move request.headers,
-      body: move request.body,
-      requestId: request.requestId,
-      timeoutMs: request.timeoutMs,
-      responseBody: "",
-      responseHeadersRaw: "",
-      easy: nil
-    )
-    client.queue.addLast(wrapped)
-
+  body
   signal(client.wakeCond)
   release(client.lock)
 
-proc waitForResult*(client: Relay; outResult: var BatchResult): bool =
+proc startRequests*(client: Relay; batch: sink RequestBatch) =
+  withOpenQueue(client):
+    for request in batch.requests.mitems:
+      client.queue.addLast(wrapRequest(move request))
+
+proc startRequest(client: Relay; request: sink RequestSpec) =
+  withOpenQueue(client):
+    client.queue.addLast(wrapRequest(request))
+
+proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
   acquire(client.lock)
   while client.readyResults.len == 0 and client.workerRunning:
     wait(client.resultCond, client.lock)
@@ -495,7 +511,7 @@ proc waitForResult*(client: Relay; outResult: var BatchResult): bool =
     result = false
   release(client.lock)
 
-proc pollForResult*(client: Relay; outResult: var BatchResult): bool =
+proc pollForResult*(client: Relay; outResult: var RequestResult): bool =
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
@@ -504,36 +520,79 @@ proc pollForResult*(client: Relay; outResult: var BatchResult): bool =
     result = false
   release(client.lock)
 
-proc makeRequests*(client: Relay; batch: sink RequestBatch): ResponseBatch =
-  acquire(client.lock)
-  let busy =
-    client.queue.len > 0 or
-    client.inFlight.len > 0 or
-    client.readyResults.len > 0
-  release(client.lock)
-
-  if busy:
+proc makeRequests*(client: Relay; batch: sink RequestBatch): RequestResults =
+  if client.clientIsBusy():
     raise newException(IOError, "makeRequests requires an idle client")
 
   let expected = batch.requests.len
   client.startRequests(batch)
   result = @[]
   for _ in 0..<expected:
-    var item: BatchResult
+    var item: RequestResult
     if not client.waitForResult(item):
       raise newException(IOError, "client stopped before all responses arrived")
     result.add(item)
 
+proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult =
+  if client.clientIsBusy():
+    raise newException(IOError, "makeRequest requires an idle client")
+
+  client.startRequest(request)
+  if not client.waitForResult(result):
+    raise newException(IOError, "client stopped before response arrived")
+
+proc makeVerbRequest(client: Relay; verb: HttpVerb; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
+    requestId = 0'i64; timeoutMs = 0): RequestResult {.inline.} =
+  client.makeRequest(RequestSpec(
+    verb: verb,
+    url: url,
+    headers: headers,
+    body: body,
+    requestId: requestId,
+    timeoutMs: timeoutMs
+  ))
+
+proc get*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvGet, url, headers, "", requestId, timeoutMs)
+
+proc post*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
+    requestId = 0'i64; timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvPost, url, headers, body, requestId, timeoutMs)
+
+proc put*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
+    requestId = 0'i64; timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvPut, url, headers, body, requestId, timeoutMs)
+
+proc patch*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
+    requestId = 0'i64; timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvPatch, url, headers, body, requestId, timeoutMs)
+
+proc delete*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvDelete, url, headers, "", requestId, timeoutMs)
+
+proc head*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvHead, url, headers, "", requestId, timeoutMs)
+
 proc len*(batch: RequestBatch): int =
   batch.requests.len
 
-proc `[]`*(batch: RequestBatch; i: int): lent BatchRequest =
+proc `[]`*(batch: RequestBatch; i: int): lent RequestSpec =
   batch.requests[i]
 
 proc addRequest*(batch: var RequestBatch; verb: HttpVerb; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    requestId = 0'i64; timeoutMs = 0) =
-  batch.requests.add(BatchRequest(
+    requestId = 0'i64; timeoutMs = 0) {.inline.} =
+  batch.requests.add(RequestSpec(
     verb: verb,
     url: url,
     headers: headers,

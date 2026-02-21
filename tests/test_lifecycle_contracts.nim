@@ -129,7 +129,7 @@ proc testClearQueueCancelsQueuedRequests() =
   var canceledCount = 0
   var timeoutCount = 0
   for _ in 0..<3:
-    var item: BatchResult
+    var item: RequestResult
     doAssert client.waitForResult(item)
     seenRequestIds.add(item.response.request.requestId)
     case item.error.kind
@@ -177,7 +177,7 @@ proc testPollForResultEmptyQueue() =
   defer:
     client.close()
 
-  var item: BatchResult
+  var item: RequestResult
   doAssert not client.pollForResult(item)
 
 proc main() =
