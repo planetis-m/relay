@@ -130,6 +130,8 @@ proc setHeaderCallback*(easy: var Easy; cb: curl_write_callback; userdata: point
     "CURLOPT_HEADERDATA failed")
 
 proc setRequestBody*(easy: var Easy; data: string) =
+  # WARNING: CURLOPT_POSTFIELDS does not copy this buffer; caller must keep data
+  # alive and unchanged until the transfer is finished or the handle is removed.
   checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDS, data.cstring),
     "CURLOPT_POSTFIELDS failed")
   checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDSIZE, clong(data.len)),
