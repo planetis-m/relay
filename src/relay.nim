@@ -583,7 +583,7 @@ proc head*(client: Relay; url: sink string;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvHead, url, headers, "", requestId, timeoutMs)
 
-proc len*(batch: RequestBatch): int =
+proc len*(batch: RequestBatch): int {.inline.} =
   batch.requests.len
 
 proc `[]`*(batch: RequestBatch; i: int): lent RequestSpec =
