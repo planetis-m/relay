@@ -5,7 +5,6 @@ export CurlMsgType, CURLMsg
 type
   EasyObj = object
     raw: CURL
-    postData: string
     errorBuf: array[256, char]
   Easy* = ref EasyObj
 
@@ -18,7 +17,6 @@ type
 proc `=destroy`(easy: EasyObj) =
   if pointer(easy.raw) != nil:
     curl_easy_cleanup(easy.raw)
-    `=destroy`(easy.postData)
 
 proc `=destroy`*(multi: Multi) =
   if pointer(multi.raw) != nil:
@@ -126,10 +124,9 @@ proc setHeaderCallback*(easy: var Easy; cb: curl_write_callback; userdata: point
     "CURLOPT_HEADERDATA failed")
 
 proc setRequestBody*(easy: var Easy; data: string) =
-  easy.postData = data
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDS, easy.postData.cstring),
+  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDS, data.cstring),
     "CURLOPT_POSTFIELDS failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDSIZE, clong(easy.postData.len)),
+  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDSIZE, clong(data.len)),
     "CURLOPT_POSTFIELDSIZE failed")
 
 proc setMethod*(easy: var Easy; verb: string) =
@@ -170,7 +167,6 @@ proc setAcceptEncoding*(easy: var Easy; encoding: string) =
 
 proc reset*(easy: var Easy) =
   curl_easy_reset(easy.raw)
-  easy.postData.setLen(0)
   checkCurl(curl_easy_setopt(easy.raw, CURLOPT_ERRORBUFFER, addr easy.errorBuf[0]),
     "CURLOPT_ERRORBUFFER failed")
   checkCurl(curl_easy_setopt(easy.raw, CURLOPT_NOSIGNAL, clong(1)),
@@ -186,10 +182,7 @@ proc effectiveUrl*(easy: Easy): string =
   var urlPtr: cstring
   checkCurl(curl_easy_getinfo(easy.raw, CURLINFO_EFFECTIVE_URL, addr urlPtr),
     "CURLINFO_EFFECTIVE_URL failed")
-  if urlPtr.isNil:
-    result = ""
-  else:
-    result = $urlPtr
+  result = $urlPtr
 
 proc addHeader*(list: var Slist; headerLine: string) =
   list.raw = curl_slist_append(list.raw, headerLine.cstring)
