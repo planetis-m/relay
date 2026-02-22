@@ -6,7 +6,7 @@ type
     reqMethod: HttpMethod
     body: string
 
-  TestServer = ref object
+  TestServerObj = object
     lock: Lock
     readyCond: Cond
     ready: bool
@@ -15,9 +15,21 @@ type
     startError: string
     expectedCount: int
     captured: seq[CapturedRequest]
-    thread: Thread[TestServer]
+    thread: Thread[ptr TestServerObj]
+  TestServer = ref TestServerObj
 
-proc testServerMain(server: TestServer) {.thread, raises: [].} =
+proc teardownDispatcher() =
+  try:
+    var spins = 0
+    while hasPendingOperations() and spins < 200:
+      poll(0)
+      inc spins
+    setGlobalDispatcher(nil)
+  except:
+    discard
+
+proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
+  let server = cast[TestServer](serverPtr)
   proc runServer() {.async.} =
     var http = newAsyncHttpServer()
 
@@ -68,6 +80,8 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
       server.ready = true
       signal(server.readyCond)
     release(server.lock)
+  finally:
+    teardownDispatcher()
 
 proc startTestServer(expectedCount: int): TestServer =
   new(result)
@@ -79,7 +93,7 @@ proc startTestServer(expectedCount: int): TestServer =
   result.startError = ""
   result.expectedCount = expectedCount
   result.captured = @[]
-  createThread(result.thread, testServerMain, result)
+  createThread(result.thread, testServerMain, cast[ptr TestServerObj](result))
 
   acquire(result.lock)
   while not result.ready:

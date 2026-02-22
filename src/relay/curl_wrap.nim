@@ -69,7 +69,7 @@ proc initEasy*(): Easy =
   result = Easy(raw: curl_easy_init(), errorBuf: newString(256))
   if pointer(result.raw) == nil:
     raise newException(IOError, "curl_easy_init failed")
-  discard curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, addr result.errorBuf[0])
+  discard curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, result.errorBuf.cstring)
   discard curl_easy_setopt(result.raw, CURLOPT_NOSIGNAL, clong(1))
 
 proc initMulti*(): Multi =
@@ -175,7 +175,7 @@ proc setAcceptEncoding*(easy: var Easy; encoding: string) =
 
 proc reset*(easy: var Easy) =
   curl_easy_reset(easy.raw)
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_ERRORBUFFER, addr easy.errorBuf[0]),
+  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_ERRORBUFFER, easy.errorBuf.cstring),
     "CURLOPT_ERRORBUFFER failed")
   checkCurl(curl_easy_setopt(easy.raw, CURLOPT_NOSIGNAL, clong(1)),
     "CURLOPT_NOSIGNAL failed")

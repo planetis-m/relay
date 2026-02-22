@@ -2,16 +2,28 @@ import relay
 import std/[algorithm, asynchttpserver, asyncdispatch, locks, net]
 
 type
-  TestServer = ref object
+  TestServerObj = object
     lock: Lock
     readyCond: Cond
     ready: bool
     stopRequested: bool
     port: Port
     startError: string
-    thread: Thread[TestServer]
+    thread: Thread[ptr TestServerObj]
+  TestServer = ref TestServerObj
 
-proc testServerMain(server: TestServer) {.thread, raises: [].} =
+proc teardownDispatcher() =
+  try:
+    var spins = 0
+    while hasPendingOperations() and spins < 200:
+      poll(0)
+      inc spins
+    setGlobalDispatcher(nil)
+  except:
+    discard
+
+proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
+  let server = cast[TestServer](serverPtr)
   proc runServer() {.async.} =
     var http = newAsyncHttpServer()
 
@@ -57,6 +69,8 @@ proc testServerMain(server: TestServer) {.thread, raises: [].} =
       server.ready = true
       signal(server.readyCond)
     release(server.lock)
+  finally:
+    teardownDispatcher()
 
 proc startTestServer(): TestServer =
   new(result)
@@ -66,7 +80,7 @@ proc startTestServer(): TestServer =
   result.stopRequested = false
   result.port = Port(0)
   result.startError = ""
-  createThread(result.thread, testServerMain, result)
+  createThread(result.thread, testServerMain, cast[ptr TestServerObj](result))
 
   acquire(result.lock)
   while not result.ready:
