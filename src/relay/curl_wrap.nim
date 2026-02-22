@@ -3,10 +3,9 @@ import ./bindings/curl
 export CurlMsgType, CURLMsg
 
 type
-  EasyObj = object
+  Easy* = object
     raw: CURL
-    errorBuf: array[256, char]
-  Easy* = ref EasyObj
+    errorBuf: string
 
   Multi* = object
     raw: CURLM
@@ -14,9 +13,10 @@ type
   Slist* = object
     raw: ptr curl_slist
 
-proc `=destroy`(easy: EasyObj) =
+proc `=destroy`(easy: Easy) =
   if pointer(easy.raw) != nil:
     curl_easy_cleanup(easy.raw)
+  `=destroy`(easy.errorBuf)
 
 proc `=destroy`*(multi: Multi) =
   if pointer(multi.raw) != nil:
@@ -26,16 +26,28 @@ proc `=destroy`*(list: Slist) =
   if pointer(list.raw) != nil:
     curl_slist_free_all(list.raw)
 
-proc `=copy`*(dest: var EasyObj; src: EasyObj) {.error.}
-proc `=dup`*(src: EasyObj): EasyObj {.error.}
-proc `=sink`*(dest: var EasyObj; src: EasyObj) {.error.}
-proc `=wasMoved`*(easy: var EasyObj) {.error.}
+proc `=wasMoved`*(easy: var Easy) =
+  easy.raw = CURL(nil)
+  `=wasMoved`(easy.errorBuf)
 
+proc `=wasMoved`*(multi: var Multi) =
+  multi.raw = CURLM(nil)
+
+proc `=wasMoved`*(list: var Slist) =
+  list.raw = nil
+
+proc `=dup`*(src: Easy): Easy {.error.}
+proc `=dup`*(src: Multi): Multi {.error.}
+proc `=dup`*(src: Slist): Slist {.error.}
+
+proc `=copy`*(dest: var Easy; src: Easy) {.error.}
 proc `=copy`*(dest: var Multi; src: Multi) {.error.}
 proc `=copy`*(dest: var Slist; src: Slist) {.error.}
 
-proc `=dup`*(src: Multi): Multi {.error.}
-proc `=dup`*(src: Slist): Slist {.error.}
+proc `=sink`*(dest: var Easy; src: Easy) =
+  `=destroy`(dest)
+  dest.raw = src.raw
+  `=sink`(dest.errorBuf, src.errorBuf)
 
 proc `=sink`*(dest: var Multi; src: Multi) =
   `=destroy`(dest)
@@ -44,12 +56,6 @@ proc `=sink`*(dest: var Multi; src: Multi) =
 proc `=sink`*(dest: var Slist; src: Slist) =
   `=destroy`(dest)
   dest.raw = src.raw
-
-proc `=wasMoved`*(multi: var Multi) =
-  multi.raw = CURLM(nil)
-
-proc `=wasMoved`*(list: var Slist) =
-  list.raw = nil
 
 proc checkCurl(code: CURLcode; context: string) {.noinline.} =
   if code != CURLE_OK:
@@ -60,7 +66,7 @@ proc checkMulti(code: CURLMcode; context: string) {.noinline.} =
     raise newException(IOError, context & ": " & $curl_multi_strerror(code))
 
 proc initEasy*(): Easy =
-  result = Easy(raw: curl_easy_init())
+  result = Easy(raw: curl_easy_init(), errorBuf: newString(256))
   if pointer(result.raw) == nil:
     raise newException(IOError, "curl_easy_init failed")
   discard curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, addr result.errorBuf[0])

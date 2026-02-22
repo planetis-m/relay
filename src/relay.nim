@@ -234,7 +234,7 @@ proc flushCanceledLocked(client: Relay; message: sink string) =
       client.multi.removeHandle(req.easy)
     except CatchableError:
       discard
-    client.availableEasy.add(req.easy)
+    client.availableEasy.add(move req.easy)
     client.storeCompletionLocked(
       (newResponse(req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
@@ -280,8 +280,7 @@ proc processDoneMessages(client: Relay) =
 
         let completion = completionFromCurl(request, msg.data.result, removeError)
         acquire(client.lock)
-        if request.easy != nil:
-          client.availableEasy.add(request.easy)
+        client.availableEasy.add(move request.easy)
         client.storeCompletionLocked(completion)
         release(client.lock)
 
@@ -302,18 +301,18 @@ proc dispatchQueuedRequests(client: Relay) =
       var dispatched = true
       var dispatchError = ""
       try:
-        request.easy = easy
-        configureEasy(client, request, easy)
-        client.multi.addHandle(easy)
+        request.easy = move easy
+        configureEasy(client, request, request.easy)
+        client.multi.addHandle(request.easy)
       except CatchableError:
         dispatched = false
         dispatchError = getCurrentExceptionMsg()
 
       acquire(client.lock)
       if dispatched:
-        client.inFlight[handleKey(easy)] = request
+        client.inFlight[handleKey(request.easy)] = request
       else:
-        client.availableEasy.add(easy)
+        client.availableEasy.add(move request.easy)
         client.storeCompletionLocked(
           (newResponse(request), newTransportError(teInternal, dispatchError)))
       release(client.lock)
@@ -478,7 +477,7 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
     timeoutMs: request.timeoutMs,
     responseBody: "",
     responseHeadersRaw: "",
-    easy: nil
+    easy: default(Easy)
   )
 
 template withOpenQueue(client: Relay; body: untyped) =
