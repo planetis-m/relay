@@ -2,7 +2,7 @@ import relay
 import std/[algorithm, locks, net, os]
 
 type
-  StallServer = ref object
+  StallServerObj = object
     lock: Lock
     readyCond: Cond
     ready: bool
@@ -10,9 +10,11 @@ type
     port: Port
     listener: Socket
     startError: string
-    thread: Thread[StallServer]
+    thread: Thread[ptr StallServerObj]
+  StallServer = ref StallServerObj
 
-proc stallServerMain(server: StallServer) {.thread, raises: [].} =
+proc stallServerMain(serverPtr: ptr StallServerObj) {.thread, raises: [].} =
+  let server = cast[StallServer](serverPtr)
   var listener: Socket
   var client: owned(Socket)
   try:
@@ -59,7 +61,7 @@ proc startStallServer(): StallServer =
   result.port = Port(0)
   result.listener = nil
   result.startError = ""
-  createThread(result.thread, stallServerMain, result)
+  createThread(result.thread, stallServerMain, cast[ptr StallServerObj](result))
 
   acquire(result.lock)
   while not result.ready:
@@ -91,6 +93,7 @@ proc stopStallServer(server: StallServer) =
       discard
 
   joinThread(server.thread)
+  server.thread = default(Thread[ptr StallServerObj])
   deinitCond(server.readyCond)
   deinitLock(server.lock)
 
