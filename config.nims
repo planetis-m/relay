@@ -16,8 +16,6 @@ elif defined(windows):
   let vcpkgRoot = getEnv("VCPKG_ROOT", "C:/vcpkg/installed/x64-windows-release")
   switch("passC", "-I" & vcpkgRoot & "/include")
   switch("passL", vcpkgRoot & "/lib/libcurl.lib")
-else:
-  switch("passL", "-Wl,-rpath,\\$ORIGIN")
 
 when defined(threadSanitizer) or defined(addressSanitizer):
   switch("define", "useMalloc")

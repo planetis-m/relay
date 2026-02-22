@@ -362,21 +362,22 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     maxRedirects = 10): Relay =
   initGlobal()
 
-  new(result)
+  result = Relay(
+    maxInFlight: max(1, maxInFlight),
+    defaultTimeoutMs: max(1, defaultTimeoutMs),
+    maxRedirects: max(0, maxRedirects),
+    workerRunning: true,
+    multi: initMulti(),
+    queue: initDeque[RequestWrap](),
+    readyResults: initDeque[RequestResult](),
+    inFlight: initTable[pointer, RequestWrap](),
+    availableEasy: @[]
+  )
+
   initLock(result.lock)
   initCond(result.wakeCond)
   initCond(result.resultCond)
-  result.maxInFlight = max(1, maxInFlight)
-  result.defaultTimeoutMs = max(1, defaultTimeoutMs)
-  result.maxRedirects = max(0, maxRedirects)
-  result.workerRunning = true
-  result.closeRequested = false
-  result.abortRequested = false
-  result.closed = false
-  result.multi = initMulti()
-  result.queue = initDeque[RequestWrap]()
-  result.readyResults = initDeque[RequestResult]()
-  result.inFlight = initTable[pointer, RequestWrap]()
+
   for _ in 0..<result.maxInFlight:
     result.availableEasy.add(initEasy())
 
@@ -480,23 +481,28 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
     easy: default(Easy)
   )
 
-template withOpenQueue(client: Relay; body: untyped) =
+proc startRequests*(client: Relay; batch: sink RequestBatch) =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
     raise newException(IOError, "client is closed")
-  body
+  
+  for request in batch.requests.mitems:
+    client.queue.addLast(wrapRequest(move request))
+  
   signal(client.wakeCond)
   release(client.lock)
 
-proc startRequests*(client: Relay; batch: sink RequestBatch) =
-  withOpenQueue(client):
-    for request in batch.requests.mitems:
-      client.queue.addLast(wrapRequest(move request))
-
 proc startRequest*(client: Relay; request: sink RequestSpec) =
-  withOpenQueue(client):
-    client.queue.addLast(wrapRequest(request))
+  acquire(client.lock)
+  if client.closed or client.closeRequested:
+    release(client.lock)
+    raise newException(IOError, "client is closed")
+  
+  client.queue.addLast(wrapRequest(request))
+  
+  signal(client.wakeCond)
+  release(client.lock)
 
 proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
   acquire(client.lock)
