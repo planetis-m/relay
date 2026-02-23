@@ -63,9 +63,10 @@ defer: client.close()
 var batch: RequestBatch
 batch.post("https://example.com/api", body = """{"x":1}""", requestId = 101)
 batch.post("https://example.com/api", body = """{"x":2}""", requestId = 102)
-client.startRequests(batch)
 
+# Capture size before startRequests(batch) moves the batch.
 var pending = batch.len
+client.startRequests(batch)
 while pending > 0:
   var item: RequestResult
   if client.waitForResult(item):

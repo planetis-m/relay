@@ -122,6 +122,8 @@ proc testClearQueueCancelsQueuedRequests() =
   batch.get(url, requestId = 1, timeoutMs = 900)
   batch.get(url, requestId = 2, timeoutMs = 900)
   batch.get(url, requestId = 3, timeoutMs = 900)
+  # Capture size before startRequests(batch) moves the batch.
+  let pending = batch.len
   client.startRequests(batch)
 
   doAssert waitForQueuedState(client, minQueueLen = 2, timeoutMs = 1_000),
@@ -131,7 +133,7 @@ proc testClearQueueCancelsQueuedRequests() =
   var seenRequestIds: seq[int64]
   var canceledCount = 0
   var timeoutCount = 0
-  for _ in 0..<3:
+  for _ in 0..<pending:
     var item: RequestResult
     doAssert client.waitForResult(item)
     seenRequestIds.add(item.response.request.requestId)

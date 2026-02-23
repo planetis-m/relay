@@ -9,9 +9,11 @@ proc main =
   batch.get("https://example.org", requestId = 2)
   batch.get("https://iana.org", requestId = 3)
 
+  # Capture size before startRequests(batch) moves the batch.
+  let pending = batch.len
   client.startRequests(batch)
 
-  for _ in 0..<3:
+  for _ in 0..<pending:
     var item: RequestResult
     if client.waitForResult(item):
       if item.error.kind == teNone:

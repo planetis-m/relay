@@ -150,10 +150,12 @@ proc main =
   asyncBatch.get(url, requestId = 4, timeoutMs = 2_000)
   asyncBatch.get(url, requestId = 5, timeoutMs = 2_000)
   asyncBatch.get(url, requestId = 6, timeoutMs = 2_000)
+  # Capture size before startRequests(batch) moves the batch.
+  let pending = asyncBatch.len
   client.startRequests(asyncBatch)
 
   var asyncResults: RequestResults
-  for _ in 0..<3:
+  for _ in 0..<pending:
     var item: RequestResult
     doAssert client.waitForResult(item)
     asyncResults.add(item)
