@@ -390,25 +390,25 @@ proc close*(client: Relay) =
   acquire(client.lock)
   if client.closed:
     release(client.lock)
-    return
-  client.closeRequested = true
-  signal(client.wakeCond)
-  release(client.lock)
+  else:
+    client.closeRequested = true
+    signal(client.wakeCond)
+    release(client.lock)
 
-  joinThread(client.thread)
+    joinThread(client.thread)
 
-  acquire(client.lock)
-  client.closed = true
-  client.availableEasy.setLen(0)
-  client.queue.clear()
-  client.inFlight.clear()
-  client.readyResults.clear()
-  release(client.lock)
+    acquire(client.lock)
+    client.closed = true
+    client.availableEasy.setLen(0)
+    client.queue.clear()
+    client.inFlight.clear()
+    client.readyResults.clear()
+    release(client.lock)
 
-  deinitCond(client.resultCond)
-  deinitCond(client.wakeCond)
-  deinitLock(client.lock)
-  cleanupGlobal()
+    deinitCond(client.resultCond)
+    deinitCond(client.wakeCond)
+    deinitLock(client.lock)
+    cleanupGlobal()
 
 proc abort*(client: Relay) =
   if client.isNil:
