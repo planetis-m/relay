@@ -1,4 +1,4 @@
-import std/strutils
+import std/[strutils, parseutils]
 
 type
   HttpHeader* = tuple[name: string, value: string]
@@ -30,3 +30,39 @@ proc `[]=`*(headers: var HttpHeaders; key, value: string) =
       headers[i] = updated
       return
   headers.add((key, value))
+
+func trimRight(s: string, start, stop: int): int =
+  result = stop
+  while result > start and s[result - 1] in Whitespace:
+    dec result
+
+func parseHeaders*(raw: string): HttpHeaders =
+  result = @[]
+  var pos = 0
+  while pos < raw.len:
+    var line = ""
+    pos += parseUntil(raw, line, "\r\n", pos)
+    pos += skip(raw, "\r\n", pos)
+    var lp = 0
+    lp += skipWhitespace(line, lp)
+    let ep = trimRight(line, lp, line.len)
+    if lp >= ep:
+      discard
+    elif line.startsWith("HTTP/"):
+      result.setLen(0)
+    else:
+      let colonPos = line.find(':', lp)
+      var name: string
+      var vp: int
+      if colonPos < 0 or colonPos >= ep:
+        name = line.substr(lp, ep - 1)
+        vp = ep  # no value
+      else:
+        let ne = trimRight(line, lp, colonPos)
+        name = if lp >= ne: "" else: line.substr(lp, ne - 1)
+        vp = colonPos + 1
+        vp += skipWhitespace(line, vp)
+      let ve = trimRight(line, vp, ep)
+      let value = if vp >= ve: "" else: line.substr(vp, ve - 1)
+      result.add((name, value))
+
