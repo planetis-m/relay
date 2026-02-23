@@ -158,6 +158,7 @@ proc storeCompletionLocked(client: Relay; item: sink RequestResult) =
 proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
+  easy.setHttpVersion2Tls()
 
   easy.setMethod($request.verb)
   easy.setNoBody(request.verb == hvHead)
