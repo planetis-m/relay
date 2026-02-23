@@ -481,7 +481,7 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
     easy: default(Easy)
   )
 
-proc startRequests*(client: Relay; batch: sink RequestBatch) =
+proc startRequests*(client: Relay; batch: var RequestBatch) =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
@@ -489,6 +489,7 @@ proc startRequests*(client: Relay; batch: sink RequestBatch) =
   
   for request in batch.requests.mitems:
     client.queue.addLast(wrapRequest(move request))
+  batch.requests.setLen(0)
   
   signal(client.wakeCond)
   release(client.lock)

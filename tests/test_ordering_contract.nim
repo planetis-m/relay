@@ -150,7 +150,7 @@ proc main =
   asyncBatch.get(url, requestId = 4, timeoutMs = 2_000)
   asyncBatch.get(url, requestId = 5, timeoutMs = 2_000)
   asyncBatch.get(url, requestId = 6, timeoutMs = 2_000)
-  # Capture size before startRequests(batch) moves the batch.
+  # Capture size before startRequests(batch) drains the batch.
   let pending = asyncBatch.len
   client.startRequests(asyncBatch)
 

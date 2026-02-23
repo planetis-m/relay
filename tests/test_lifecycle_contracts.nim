@@ -122,7 +122,7 @@ proc testClearQueueCancelsQueuedRequests() =
   batch.get(url, requestId = 1, timeoutMs = 900)
   batch.get(url, requestId = 2, timeoutMs = 900)
   batch.get(url, requestId = 3, timeoutMs = 900)
-  # Capture size before startRequests(batch) moves the batch.
+  # Capture size before startRequests(batch) drains the batch.
   let pending = batch.len
   client.startRequests(batch)
 
