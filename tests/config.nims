@@ -1,3 +1,6 @@
+# Local build config for tests
+switch("path", "../src")
+
 switch("threads", "on")
 switch("mm", "atomicArc")
 
