@@ -64,7 +64,7 @@ var batch: RequestBatch
 batch.post("https://example.com/api", body = """{"x":1}""", requestId = 101)
 batch.post("https://example.com/api", body = """{"x":2}""", requestId = 102)
 
-# Capture size before startRequests(batch) moves the batch.
+# Capture size before startRequests(batch) drains the batch.
 var pending = batch.len
 client.startRequests(batch)
 while pending > 0:
@@ -160,7 +160,7 @@ proc `[]=`*(headers: var HttpHeaders; key, value: string)
 
 ```nim
 proc startRequest*(client: Relay; request: sink RequestSpec)
-proc startRequests*(client: Relay; batch: sink RequestBatch)
+proc startRequests*(client: Relay; batch: var RequestBatch)
 proc waitForResult*(client: Relay; outResult: var RequestResult): bool
 proc pollForResult*(client: Relay; outResult: var RequestResult): bool
 proc makeRequests*(client: Relay; batch: sink RequestBatch): RequestResults

@@ -9,7 +9,7 @@ proc main =
   batch.get("https://example.org", requestId = 2)
   batch.get("https://iana.org", requestId = 3)
 
-  # Capture size before startRequests(batch) moves the batch.
+  # Capture size before startRequests(batch) drains the batch.
   let pending = batch.len
   client.startRequests(batch)
 
