@@ -176,9 +176,8 @@ proc testMakeRequestsRequiresIdleClient() =
   client.abort()
 
 proc testPollForResultEmptyQueue() =
-  var client = newRelay(maxInFlight = 1)
-  defer:
-    client.close()
+  let client = newRelay(maxInFlight = 1)
+  defer: client.close()
 
   var item: RequestResult
   doAssert not client.pollForResult(item)

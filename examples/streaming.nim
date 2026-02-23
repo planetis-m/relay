@@ -1,7 +1,7 @@
 import relay
 
 proc main =
-  var client = newRelay(maxInFlight = 2)
+  let client = newRelay(maxInFlight = 2)
   defer: client.close()
 
   var batch: RequestBatch
