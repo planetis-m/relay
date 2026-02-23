@@ -1,7 +1,6 @@
-import std/[deques, locks, strutils, tables]
-import ./relay/http_headers
+import std/[deques, locks, tables]
 import ./relay/bindings/curl
-import ./relay/curl_wrap
+import ./relay/[http_headers, curl_wrap]
 
 export http_headers
 
@@ -109,27 +108,6 @@ proc classifyTransportError(curlCode: CURLcode): TransportErrorKind {.inline.} =
     teCanceled
   else:
     teNetwork
-
-proc parseHeaders(raw: string): HttpHeaders =
-  result = @[]
-  for rawLine in raw.split("\r\n"):
-    let line = rawLine.strip()
-    if line.len == 0:
-      discard
-    elif line.startsWith("HTTP/"):
-      result.setLen(0)
-    else:
-      let sep = line.find(':')
-      if sep < 0:
-        result.add((line, ""))
-      elif sep == 0:
-        result.add(("", line.substr(1).strip()))
-      else:
-        let name = line.substr(0, sep - 1).strip()
-        let value =
-          if sep + 1 >= line.len: ""
-          else: line.substr(sep + 1).strip()
-        result.add((name, value))
 
 proc bodyWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
   let total = int(size * nitems)
@@ -526,7 +504,7 @@ proc pollForResult*(client: Relay; outResult: var RequestResult): bool =
     result = false
   release(client.lock)
 
-proc makeRequests*(client: Relay; batch: sink RequestBatch): RequestResults =
+proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults =
   if client.clientIsBusy():
     raise newException(IOError, "makeRequests requires an idle client")
 

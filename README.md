@@ -163,7 +163,7 @@ proc startRequest*(client: Relay; request: sink RequestSpec)
 proc startRequests*(client: Relay; batch: var RequestBatch)
 proc waitForResult*(client: Relay; outResult: var RequestResult): bool
 proc pollForResult*(client: Relay; outResult: var RequestResult): bool
-proc makeRequests*(client: Relay; batch: sink RequestBatch): RequestResults
+proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults
 proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult
 proc get*(client: Relay; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0): RequestResult
