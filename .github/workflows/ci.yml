@@ -101,7 +101,7 @@ jobs:
       - name: Install dependencies (vcpkg)
         uses: johnwason/vcpkg-action@v7
         with:
-          pkgs: curl[http2,schannel]
+          pkgs: curl[http2,ssl,c-ares]
           triplet: x64-windows-release
           token: ${{ github.token }}
 
