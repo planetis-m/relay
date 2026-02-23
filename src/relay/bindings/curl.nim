@@ -6,6 +6,7 @@ type
   CURLcode* = cint
   CURLMcode* = cint
   CURLoption* = cint
+  CURLMoption* = cint
   CURLINFO* = cint
 
   curl_slist* {.importc: "struct curl_slist", header: "<curl/curl.h>",
@@ -60,11 +61,25 @@ const
   CURLOPT_MAXREDIRS* = CURLoption(CURLOPTTYPE_LONG + 68)
   CURLOPT_HEADERFUNCTION* = CURLoption(CURLOPTTYPE_FUNCTIONPOINT + 79)
   CURLOPT_SSL_VERIFYHOST* = CURLoption(CURLOPTTYPE_LONG + 81)
+  CURLOPT_HTTP_VERSION* = CURLoption(CURLOPTTYPE_LONG + 84)
   CURLOPT_NOSIGNAL* = CURLoption(CURLOPTTYPE_LONG + 99)
   CURLOPT_ACCEPT_ENCODING* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 102)
   CURLOPT_PRIVATE* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 103)
   CURLOPT_TIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 155)
   CURLOPT_CONNECTTIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 156)
+
+  CURL_HTTP_VERSION_NONE* = clong(0)
+  CURL_HTTP_VERSION_1_0* = clong(1)
+  CURL_HTTP_VERSION_1_1* = clong(2)
+  CURL_HTTP_VERSION_2_0* = clong(3)
+  CURL_HTTP_VERSION_2TLS* = clong(4)
+  CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE* = clong(5)
+
+  CURLMOPT_PIPELINING* = CURLMoption(CURLOPTTYPE_LONG + 3)
+
+  CURLPIPE_NOTHING* = clong(0)
+  CURLPIPE_HTTP1* = clong(1)
+  CURLPIPE_MULTIPLEX* = clong(2)
 
   CURLINFO_LONG* = 0x200000
   CURLINFO_STRING* = 0x100000
@@ -92,6 +107,7 @@ proc curl_global_cleanup*()
 {.push importc, callconv: cdecl, header: "<curl/multi.h>".}
 
 proc curl_multi_init*(): CURLM
+proc curl_multi_setopt*(multiHandle: CURLM; option: CURLMoption): CURLMcode {.varargs.}
 proc curl_multi_add_handle*(multiHandle: CURLM; easyHandle: CURL): CURLMcode
 proc curl_multi_remove_handle*(multiHandle: CURLM; easyHandle: CURL): CURLMcode
 proc curl_multi_perform*(multiHandle: CURLM; runningHandles: ptr cint): CURLMcode
