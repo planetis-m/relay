@@ -134,7 +134,7 @@ proc main =
   defer:
     stopTestServer(server)
 
-  var client = newRelay(maxInFlight = 3, defaultTimeoutMs = 2_000, maxRedirects = 5)
+  let client = newRelay(maxInFlight = 3, defaultTimeoutMs = 2_000, maxRedirects = 5)
   defer: client.close()
 
   let url = testUrl(server)

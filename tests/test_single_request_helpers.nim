@@ -11,7 +11,7 @@ proc checkResult(item: RequestResult; verb: HttpVerb; requestId: int64; url: str
   doAssert item.error.kind != teNone
 
 proc main =
-  var client = newRelay(maxInFlight = 1, defaultTimeoutMs = 500)
+  let client = newRelay(maxInFlight = 1, defaultTimeoutMs = 500)
   defer: client.close()
 
   var batch: RequestBatch

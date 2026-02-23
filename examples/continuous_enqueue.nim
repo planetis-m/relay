@@ -2,7 +2,7 @@ import relay
 import std/os
 
 proc main =
-  var client = newRelay(maxInFlight = 4, defaultTimeoutMs = 1_500, maxRedirects = 5)
+  let client = newRelay(maxInFlight = 4, defaultTimeoutMs = 1_500, maxRedirects = 5)
   defer: client.close()
 
   let urls = [

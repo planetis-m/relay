@@ -20,7 +20,7 @@ nimble install
 ```nim
 import relay
 
-var client = newRelay(maxInFlight = 8)
+let client = newRelay(maxInFlight = 8)
 defer: client.close()
 
 var batch: RequestBatch
@@ -40,7 +40,7 @@ for item in client.makeRequests(batch):
 ```nim
 import relay
 
-var client = newRelay()
+let client = newRelay()
 defer: client.close()
 
 let item = client.get("https://example.com", requestId = 7)
@@ -57,7 +57,7 @@ Use this when your app has its own scheduling loop.
 ```nim
 import relay
 
-var client = newRelay(maxInFlight = 16)
+let client = newRelay(maxInFlight = 16)
 defer: client.close()
 
 var batch: RequestBatch
