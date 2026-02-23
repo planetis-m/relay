@@ -28,6 +28,7 @@ proc runSuite(flags: string) =
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_request_body_roundtrip tests/test_request_body_roundtrip.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_ordering_contract tests/test_ordering_contract.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_lifecycle_contracts tests/test_lifecycle_contracts.nim"
+  runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_parse_headers tests/test_parse_headers.nim"
 
 task test, "Run Relay test suite":
   runSuite(modeFlags())

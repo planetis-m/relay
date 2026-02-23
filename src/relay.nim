@@ -1,4 +1,4 @@
-import std/[deques, locks, strutils, tables]
+import std/[deques, locks, parseutils, tables]
 import ./relay/http_headers
 import ./relay/bindings/curl
 import ./relay/curl_wrap
@@ -110,25 +110,46 @@ proc classifyTransportError(curlCode: CURLcode): TransportErrorKind {.inline.} =
   else:
     teNetwork
 
-proc parseHeaders(raw: string): HttpHeaders =
+proc parseHeaders*(raw: string): HttpHeaders =
   result = @[]
-  for rawLine in raw.split("\r\n"):
-    let line = rawLine.strip()
-    if line.len == 0:
+  var pos = 0
+  while pos < raw.len:
+    var line = ""
+    pos += parseUntil(raw, line, "\r\n", pos)
+    pos += skip(raw, "\r\n", pos)
+    var lp = 0
+    lp += skipWhitespace(line, lp)
+    var ep = line.len
+    while ep > lp and line[ep - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+      dec ep
+    if lp >= ep:
       discard
-    elif line.startsWith("HTTP/"):
+    elif ep - lp >= 5 and line[lp] == 'H' and line[lp + 1] == 'T' and
+        line[lp + 2] == 'T' and line[lp + 3] == 'P' and line[lp + 4] == '/':
       result.setLen(0)
     else:
-      let sep = line.find(':')
-      if sep < 0:
-        result.add((line, ""))
-      elif sep == 0:
-        result.add(("", line.substr(1).strip()))
+      var namePart = ""
+      let colonPos = lp + parseUntil(line, namePart, ':', lp)
+      if colonPos >= ep:
+        result.add((line[lp..<ep], ""))
+      elif colonPos == lp:
+        var vp = colonPos + 1
+        vp += skipWhitespace(line, vp)
+        var ve = ep
+        while ve > vp and line[ve - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+          dec ve
+        result.add(("", if vp >= ve: "" else: line[vp..<ve]))
       else:
-        let name = line.substr(0, sep - 1).strip()
-        let value =
-          if sep + 1 >= line.len: ""
-          else: line.substr(sep + 1).strip()
+        var ne = namePart.len
+        while ne > 0 and namePart[ne - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+          dec ne
+        let name = namePart[0..<ne]
+        var vp = colonPos + 1
+        vp += skipWhitespace(line, vp)
+        var ve = ep
+        while ve > vp and line[ve - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+          dec ve
+        let value = if vp >= ve: "" else: line[vp..<ve]
         result.add((name, value))
 
 proc bodyWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
