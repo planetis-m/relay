@@ -6,6 +6,7 @@ type
   CURLcode* = cint
   CURLMcode* = cint
   CURLoption* = cint
+  CURLMoption* = cint
   CURLINFO* = cint
 
   curl_slist* {.importc: "struct curl_slist", header: "<curl/curl.h>",
@@ -40,6 +41,14 @@ const
 
   CURLM_OK* = CURLMcode(0)
 
+  CURLMOPTTYPE_LONG* = 0
+  CURLMOPT_PIPELINING* = CURLMoption(CURLMOPTTYPE_LONG + 3)
+
+  # Pipelining values for CURLMOPT_PIPELINING
+  CURLPIPE_NOTHING* = clong(0)
+  CURLPIPE_HTTP1* = clong(1)
+  CURLPIPE_MULTIPLEX* = clong(2)
+
   CURLOPTTYPE_LONG* = 0
   CURLOPTTYPE_OBJECTPOINT* = 10000
   CURLOPTTYPE_FUNCTIONPOINT* = 20000
@@ -65,6 +74,16 @@ const
   CURLOPT_PRIVATE* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 103)
   CURLOPT_TIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 155)
   CURLOPT_CONNECTTIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 156)
+
+  # HTTP version values for CURLOPT_HTTP_VERSION
+  CURL_HTTP_VERSION_NONE* = clong(0)
+  CURL_HTTP_VERSION_1_0* = clong(1)
+  CURL_HTTP_VERSION_1_1* = clong(2)
+  CURL_HTTP_VERSION_2_0* = clong(3)
+  CURL_HTTP_VERSION_2TLS* = clong(4)
+  CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE* = clong(5)
+
+  CURLOPT_HTTP_VERSION* = CURLoption(CURLOPTTYPE_LONG + 84)
 
   CURLINFO_LONG* = 0x200000
   CURLINFO_STRING* = 0x100000
@@ -100,5 +119,6 @@ proc curl_multi_poll*(multiHandle: CURLM; extraFds: pointer; extraNfds: cuint;
 proc curl_multi_info_read*(multiHandle: CURLM; msgsInQueue: ptr cint): ptr CURLMsg
 proc curl_multi_cleanup*(multiHandle: CURLM): CURLMcode
 proc curl_multi_strerror*(code: CURLMcode): cstring
+proc curl_multi_setopt*(multiHandle: CURLM; option: CURLMoption): CURLMcode {.varargs.}
 
 {.pop.}

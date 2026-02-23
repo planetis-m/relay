@@ -76,6 +76,9 @@ proc initMulti*(): Multi =
   result = Multi(raw: curl_multi_init())
   if pointer(result.raw) == nil:
     raise newException(IOError, "curl_multi_init failed")
+  # Enable HTTP/2 multiplexing
+  checkMulti(curl_multi_setopt(result.raw, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX),
+    "CURLMOPT_PIPELINING failed")
 
 proc initGlobal*() =
   checkCurl(curl_global_init(culong(3)), "curl_global_init failed")
@@ -172,6 +175,10 @@ proc setSslVerify*(easy: var Easy; verifyPeer: bool; verifyHost: bool) =
 proc setAcceptEncoding*(easy: var Easy; encoding: string) =
   checkCurl(curl_easy_setopt(easy.raw, CURLOPT_ACCEPT_ENCODING, encoding.cstring),
     "CURLOPT_ACCEPT_ENCODING failed")
+
+proc setHttpVersion*(easy: var Easy; version: clong) =
+  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_HTTP_VERSION, version),
+    "CURLOPT_HTTP_VERSION failed")
 
 proc reset*(easy: var Easy) =
   curl_easy_reset(easy.raw)

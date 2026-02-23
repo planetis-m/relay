@@ -176,6 +176,7 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.setConnectTimeoutMs(DefaultConnectTimeoutMs)
   easy.setSslVerify(true, true)
   easy.setAcceptEncoding("gzip, deflate")
+  easy.setHttpVersion(CURL_HTTP_VERSION_2TLS)
   easy.setFollowRedirects(true, client.maxRedirects)
 
 proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
