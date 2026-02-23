@@ -1,4 +1,5 @@
 import std/[deques, locks, parseutils, tables]
+from std/strutils import Whitespace
 import ./relay/http_headers
 import ./relay/bindings/curl
 import ./relay/curl_wrap
@@ -111,7 +112,6 @@ proc classifyTransportError(curlCode: CURLcode): TransportErrorKind {.inline.} =
     teNetwork
 
 proc parseHeaders*(raw: string): HttpHeaders =
-  const ws = {' ', '\t', '\r', '\n', '\v', '\f'}
   result = @[]
   var pos = 0
   while pos < raw.len:
@@ -121,7 +121,7 @@ proc parseHeaders*(raw: string): HttpHeaders =
     var lp = 0
     lp += skipWhitespace(line, lp)
     var ep = line.len
-    while ep > lp and line[ep - 1] in ws:
+    while ep > lp and line[ep - 1] in Whitespace:
       dec ep
     if lp >= ep:
       discard
@@ -131,25 +131,25 @@ proc parseHeaders*(raw: string): HttpHeaders =
       var namePart = ""
       let colonPos = lp + parseUntil(line, namePart, ':', lp)
       if colonPos >= ep:
-        result.add((line[lp..<ep], ""))
+        result.add((line.substr(lp, ep - 1), ""))
       elif colonPos == lp:
         var vp = colonPos + 1
         vp += skipWhitespace(line, vp)
         var ve = ep
-        while ve > vp and line[ve - 1] in ws:
+        while ve > vp and line[ve - 1] in Whitespace:
           dec ve
-        result.add(("", if vp >= ve: "" else: line[vp..<ve]))
+        result.add(("", if vp >= ve: "" else: line.substr(vp, ve - 1)))
       else:
         var ne = namePart.len
-        while ne > 0 and namePart[ne - 1] in ws:
+        while ne > 0 and namePart[ne - 1] in Whitespace:
           dec ne
-        let name = namePart[0..<ne]
+        let name = namePart.substr(0, ne - 1)
         var vp = colonPos + 1
         vp += skipWhitespace(line, vp)
         var ve = ep
-        while ve > vp and line[ve - 1] in ws:
+        while ve > vp and line[ve - 1] in Whitespace:
           dec ve
-        let value = if vp >= ve: "" else: line[vp..<ve]
+        let value = if vp >= ve: "" else: line.substr(vp, ve - 1)
         result.add((name, value))
 
 proc bodyWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
