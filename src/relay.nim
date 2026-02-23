@@ -111,6 +111,7 @@ proc classifyTransportError(curlCode: CURLcode): TransportErrorKind {.inline.} =
     teNetwork
 
 proc parseHeaders*(raw: string): HttpHeaders =
+  const ws = {' ', '\t', '\r', '\n', '\v', '\f'}
   result = @[]
   var pos = 0
   while pos < raw.len:
@@ -120,12 +121,11 @@ proc parseHeaders*(raw: string): HttpHeaders =
     var lp = 0
     lp += skipWhitespace(line, lp)
     var ep = line.len
-    while ep > lp and line[ep - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+    while ep > lp and line[ep - 1] in ws:
       dec ep
     if lp >= ep:
       discard
-    elif ep - lp >= 5 and line[lp] == 'H' and line[lp + 1] == 'T' and
-        line[lp + 2] == 'T' and line[lp + 3] == 'P' and line[lp + 4] == '/':
+    elif skip(line, "HTTP/", lp) == 5:
       result.setLen(0)
     else:
       var namePart = ""
@@ -136,18 +136,18 @@ proc parseHeaders*(raw: string): HttpHeaders =
         var vp = colonPos + 1
         vp += skipWhitespace(line, vp)
         var ve = ep
-        while ve > vp and line[ve - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+        while ve > vp and line[ve - 1] in ws:
           dec ve
         result.add(("", if vp >= ve: "" else: line[vp..<ve]))
       else:
         var ne = namePart.len
-        while ne > 0 and namePart[ne - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+        while ne > 0 and namePart[ne - 1] in ws:
           dec ne
         let name = namePart[0..<ne]
         var vp = colonPos + 1
         vp += skipWhitespace(line, vp)
         var ve = ep
-        while ve > vp and line[ve - 1] in {' ', '\t', '\r', '\n', '\v', '\f'}:
+        while ve > vp and line[ve - 1] in ws:
           dec ve
         let value = if vp >= ve: "" else: line[vp..<ve]
         result.add((name, value))
