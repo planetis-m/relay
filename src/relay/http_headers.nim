@@ -5,7 +5,7 @@ type
   HttpHeaders* = seq[HttpHeader]
 
 proc emptyHttpHeaders*(): HttpHeaders =
-  @[]
+  result = @[]
 
 proc contains*(headers: HttpHeaders; key: string): bool =
   ## Checks if there is at least one header for the key. Not case sensitive.
@@ -23,11 +23,9 @@ proc `[]=`*(headers: var HttpHeaders; key, value: string) =
   ## Adds a new header if the key is not already present. If the key is already
   ## present this overrides the first header value for the key.
   ## Not case sensitive.
-  for i, (k, _) in headers:
-    if cmpIgnoreCase(k, key) == 0:
-      var updated = headers[i]
-      updated.value = value
-      headers[i] = updated
+  for i in 0 ..< headers.len:
+    if cmpIgnoreCase(headers[i].name, key) == 0:
+      headers[i].value = value
       return
   headers.add((key, value))
 
@@ -65,4 +63,3 @@ func parseHeaders*(raw: string): HttpHeaders =
       let ve = trimRight(line, vp, ep)
       let value = if vp >= ve: "" else: line.substr(vp, ve - 1)
       result.add((name, value))
-
