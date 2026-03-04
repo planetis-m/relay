@@ -1,13 +1,13 @@
 # relay
 
-Relay is a general-purpose Nim HTTP batching client built on libcurl multi.
+Relay is a Nim HTTP client for high-throughput batches and single requests, with bounded parallelism on top of libcurl multi.
 
 It gives you:
 
-- bounded parallel requests (`maxInFlight`)
-- batch-oriented request construction
-- blocking and non-blocking result collection
-- completion-order result delivery
+- bounded parallel HTTP work with queueing (`maxInFlight`)
+- the same verb helpers for single calls and batches (`get`, `post`, `put`, `patch`, `delete`, `head`)
+- two execution styles: blocking (`makeRequest`, `makeRequests`) or incremental draining (`startRequests` + `waitForResult`/`pollForResult`)
+- operational controls for running pipelines (`queueLen`, `numInFlight`, `clearQueue`, `abort`)
 
 ## Install
 
