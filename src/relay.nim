@@ -202,7 +202,7 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: Relay; message: sink string) =
+proc flushCanceledLocked(client: Relay; message: string) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
     client.storeCompletionLocked(
