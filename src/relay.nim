@@ -373,7 +373,6 @@ proc close*(client: Relay) =
     client.closeRequested = true
     signal(client.wakeCond)
     release(client.lock)
-
     joinThread(client.thread)
 
     acquire(client.lock)
