@@ -377,7 +377,7 @@ proc close*(client: Relay) =
 
     acquire(client.lock)
     client.closed = true
-    client.availableEasy.setLen(0)
+    client.availableEasy.reset()
     client.queue.clear()
     client.inFlight.clear()
     client.readyResults.clear()
@@ -404,7 +404,7 @@ proc abort*(client: Relay) =
 
     acquire(client.lock)
     client.closed = true
-    client.availableEasy.setLen(0)
+    client.availableEasy.reset()
     client.queue.clear()
     client.inFlight.clear()
     client.readyResults.clear()
