@@ -1,8 +1,8 @@
 # Minimal libcurl bindings used by Relay.
 
 type
-  CURL* = distinct pointer
-  CURLM* = distinct pointer
+  CURL* = ptr object
+  CURLM* = ptr object
   CURLcode* = cint
   CURLMcode* = cint
   CURLoption* = cint
