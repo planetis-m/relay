@@ -3,11 +3,11 @@
 type
   CURL* = ptr object
   CURLM* = ptr object
-  CURLcode* = cint
-  CURLMcode* = cint
-  CURLoption* = cint
-  CURLMoption* = cint
-  CURLINFO* = cint
+  CURLcode* = distinct cint
+  CURLMcode* = distinct cint
+  CURLoption* = distinct cint
+  CURLMoption* = distinct cint
+  CURLINFO* = distinct cint
 
   curl_slist* {.importc: "struct curl_slist", header: "<curl/curl.h>",
       incompleteStruct.} = object
@@ -16,7 +16,8 @@ type
     whatever*: pointer
     result*: CURLcode
 
-  CurlMsgType* = cint
+  CurlMsgType* = distinct cint
+
   CURLMsg* {.importc: "CURLMsg", header: "<curl/multi.h>", bycopy.} = object
     msg*: CurlMsgType
     easy_handle*: CURL
@@ -24,6 +25,10 @@ type
 
   curl_write_callback* = proc(buffer: ptr char; size, nitems: csize_t;
       outstream: pointer): csize_t {.cdecl.}
+
+proc `==`*(a, b: CURLcode): bool {.borrow.}
+proc `==`*(a, b: CURLMcode): bool {.borrow.}
+proc `==`*(a, b: CurlMsgType): bool {.borrow.}
 
 const
   CURLE_OK* = CURLcode(0)
@@ -71,6 +76,7 @@ const
 
   CURLMSG_NONE* = CurlMsgType(0)
   CURLMSG_DONE* = CurlMsgType(1)
+  CURLMSG_LAST* = CurlMsgType(2)
 
   CURLINFO_LONG* = 0x200000
   CURLINFO_STRING* = 0x100000
