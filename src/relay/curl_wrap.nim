@@ -14,24 +14,24 @@ type
     raw: ptr curl_slist
 
 proc `=destroy`(easy: Easy) =
-  if pointer(easy.raw) != nil:
+  if easy.raw != nil:
     curl_easy_cleanup(easy.raw)
   `=destroy`(easy.errorBuf)
 
 proc `=destroy`*(multi: Multi) =
-  if pointer(multi.raw) != nil:
+  if multi.raw != nil:
     discard curl_multi_cleanup(multi.raw)
 
 proc `=destroy`*(list: Slist) =
-  if pointer(list.raw) != nil:
+  if list.raw != nil:
     curl_slist_free_all(list.raw)
 
 proc `=wasMoved`*(easy: var Easy) =
-  easy.raw = CURL(nil)
+  easy.raw = nil
   `=wasMoved`(easy.errorBuf)
 
 proc `=wasMoved`*(multi: var Multi) =
-  multi.raw = CURLM(nil)
+  multi.raw = nil
 
 proc `=wasMoved`*(list: var Slist) =
   list.raw = nil
@@ -67,14 +67,14 @@ proc checkMulti(code: CURLMcode; context: string) {.noinline.} =
 
 proc initEasy*(): Easy =
   result = Easy(raw: curl_easy_init(), errorBuf: newString(256))
-  if pointer(result.raw) == nil:
+  if result.raw == nil:
     raise newException(IOError, "curl_easy_init failed")
   discard curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, result.errorBuf.cstring)
   discard curl_easy_setopt(result.raw, CURLOPT_NOSIGNAL, clong(1))
 
 proc initMulti*(): Multi =
   result = Multi(raw: curl_multi_init())
-  if pointer(result.raw) == nil:
+  if result.raw == nil:
     raise newException(IOError, "curl_multi_init failed")
   checkMulti(curl_multi_setopt(result.raw, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX),
     "CURLMOPT_PIPELINING failed")
@@ -204,7 +204,7 @@ proc addHeader*(list: var Slist; headerLine: string) =
     raise newException(IOError, "curl_slist_append failed")
 
 proc handleKey*(easy: Easy): pointer =
-  pointer(easy.raw)
+  easy.raw
 
 proc handleKey*(msg: CURLMsg): pointer =
-  pointer(msg.easy_handle)
+  msg.easy_handle
