@@ -8,10 +8,14 @@ type
   CURLoption* = cint
   CURLMoption* = cint
   CURLINFO* = cint
-  CurlMsgType* = cint
 
   curl_slist* {.importc: "struct curl_slist", header: "<curl/curl.h>",
       incompleteStruct.} = object
+
+  CurlMsgType* {.size: sizeof(cint).} = enum
+    CURLMSG_NONE = 0,
+    CURLMSG_DONE = 1,
+    CURLMSG_LAST = 2
 
   CURLMsgData* {.union.} = object
     whatever*: pointer
@@ -76,10 +80,6 @@ const
   CURLPIPE_NOTHING* = clong(0)
   CURLPIPE_HTTP1* = clong(1)
   CURLPIPE_MULTIPLEX* = clong(2)
-
-  CURLMSG_NONE = CurlMsgType(0)
-  CURLMSG_DONE = CurlMsgType(1)
-  CURLMSG_LAST = CurlMsgType(2)
 
   CURLINFO_LONG* = 0x200000
   CURLINFO_STRING* = 0x100000
