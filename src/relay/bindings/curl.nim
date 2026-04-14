@@ -12,15 +12,11 @@ type
   curl_slist* {.importc: "struct curl_slist", header: "<curl/curl.h>",
       incompleteStruct.} = object
 
-  CurlMsgType* {.size: sizeof(cint).} = enum
-    CURLMSG_NONE = 0,
-    CURLMSG_DONE = 1,
-    CURLMSG_LAST = 2
-
   CURLMsgData* {.union.} = object
     whatever*: pointer
     result*: CURLcode
 
+  CurlMsgType* = cint
   CURLMsg* {.importc: "CURLMsg", header: "<curl/multi.h>", bycopy.} = object
     msg*: CurlMsgType
     easy_handle*: CURL
@@ -64,28 +60,22 @@ const
   CURLOPT_HTTP_VERSION* = CURLoption(CURLOPTTYPE_LONG + 84)
   CURLOPT_NOSIGNAL* = CURLoption(CURLOPTTYPE_LONG + 99)
   CURLOPT_ACCEPT_ENCODING* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 102)
-  CURLOPT_PRIVATE* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 103)
   CURLOPT_TIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 155)
   CURLOPT_CONNECTTIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 156)
 
-  CURL_HTTP_VERSION_NONE* = clong(0)
-  CURL_HTTP_VERSION_1_0* = clong(1)
-  CURL_HTTP_VERSION_1_1* = clong(2)
-  CURL_HTTP_VERSION_2_0* = clong(3)
   CURL_HTTP_VERSION_2TLS* = clong(4)
-  CURL_HTTP_VERSION_2_PRIOR_KNOWLEDGE* = clong(5)
 
   CURLMOPT_PIPELINING* = CURLMoption(CURLOPTTYPE_LONG + 3)
 
-  CURLPIPE_NOTHING* = clong(0)
-  CURLPIPE_HTTP1* = clong(1)
   CURLPIPE_MULTIPLEX* = clong(2)
+
+  CURLMSG_NONE* = CurlMsgType(0)
+  CURLMSG_DONE* = CurlMsgType(1)
 
   CURLINFO_LONG* = 0x200000
   CURLINFO_STRING* = 0x100000
   CURLINFO_EFFECTIVE_URL* = CURLINFO(CURLINFO_STRING + 1)
   CURLINFO_RESPONSE_CODE* = CURLINFO(CURLINFO_LONG + 2)
-  CURLINFO_PRIVATE* = CURLINFO(CURLINFO_STRING + 21)
 
 {.push importc, callconv: cdecl, header: "<curl/curl.h>".}
 
