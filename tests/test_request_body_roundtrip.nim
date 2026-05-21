@@ -1,9 +1,11 @@
 import relay
-import std/[asynchttpserver, asyncdispatch, locks, net]
+import std/[asynchttpserver, asyncdispatch, httpcore, locks, net]
 
 type
   CapturedRequest = object
     reqMethod: HttpMethod
+    contentType: string
+    accept: string
     body: string
 
   TestServerObj = object
@@ -35,7 +37,11 @@ proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
 
     proc cb(req: Request) {.async, gcsafe.} =
       acquire(server.lock)
-      server.captured.add(CapturedRequest(reqMethod: req.reqMethod, body: req.body))
+      server.captured.add(CapturedRequest(
+        reqMethod: req.reqMethod,
+        contentType: req.headers.getOrDefault("Content-Type"),
+        accept: req.headers.getOrDefault("Accept"),
+        body: req.body))
       release(server.lock)
       await req.respond(Http200, "OK")
 
@@ -132,7 +138,7 @@ proc testUrl(server: TestServer): string =
   "http://127.0.0.1:" & $int(server.port) & "/echo"
 
 proc main =
-  let server = startTestServer(expectedCount = 3)
+  let server = startTestServer(expectedCount = 4)
   defer:
     stopTestServer(server)
 
@@ -145,11 +151,20 @@ proc main =
   doAssert postResult.error.kind == teNone
   doAssert postResult.response.code == 200
 
-  let putResult = client.put(url, body = "put-body", requestId = 2, timeoutMs = 2_000)
+  let postBodyWithHeaders = """{"field":"value","count":1}"""
+  var headers = emptyHttpHeaders()
+  headers["Accept"] = "application/test-response"
+  headers["Content-Type"] = "application/test-request"
+  let headerPostResult = client.post(
+    url, headers, body = postBodyWithHeaders, requestId = 2, timeoutMs = 2_000)
+  doAssert headerPostResult.error.kind == teNone
+  doAssert headerPostResult.response.code == 200
+
+  let putResult = client.put(url, body = "put-body", requestId = 3, timeoutMs = 2_000)
   doAssert putResult.error.kind == teNone
   doAssert putResult.response.code == 200
 
-  let patchResult = client.patch(url, body = "patch-body", requestId = 3, timeoutMs = 2_000)
+  let patchResult = client.patch(url, body = "patch-body", requestId = 4, timeoutMs = 2_000)
   doAssert patchResult.error.kind == teNone
   doAssert patchResult.response.code == 200
 
@@ -157,13 +172,17 @@ proc main =
   let captured = server.captured
   release(server.lock)
 
-  doAssert captured.len == 3
+  doAssert captured.len == 4
   doAssert captured[0].reqMethod == HttpPost
   doAssert captured[0].body == "post-body"
-  doAssert captured[1].reqMethod == HttpPut
-  doAssert captured[1].body == "put-body"
-  doAssert captured[2].reqMethod == HttpPatch
-  doAssert captured[2].body == "patch-body"
+  doAssert captured[1].reqMethod == HttpPost
+  doAssert captured[1].contentType == "application/test-request"
+  doAssert captured[1].accept == "application/test-response"
+  doAssert captured[1].body == postBodyWithHeaders
+  doAssert captured[2].reqMethod == HttpPut
+  doAssert captured[2].body == "put-body"
+  doAssert captured[3].reqMethod == HttpPatch
+  doAssert captured[3].body == "patch-body"
 
 when isMainModule:
   main()
