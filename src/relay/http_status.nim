@@ -66,21 +66,23 @@ const
   Http511* = HttpCode(511)
 
 func `==`*(a, b: HttpCode): bool {.borrow.}
+func `<`*(a, b: HttpCode): bool {.borrow.}
+func `<=`*(a, b: HttpCode): bool {.borrow.}
 
 func is1xx*(code: HttpCode): bool {.inline.} =
-  int(code) in 100 .. 199
+  code >= Http100 and code < Http200
 
 func is2xx*(code: HttpCode): bool {.inline.} =
-  int(code) in 200 .. 299
+  code >= Http200 and code < Http300
 
 func is3xx*(code: HttpCode): bool {.inline.} =
-  int(code) in 300 .. 399
+  code >= Http300 and code < Http400
 
 func is4xx*(code: HttpCode): bool {.inline.} =
-  int(code) in 400 .. 499
+  code >= Http400 and code < Http500
 
 func is5xx*(code: HttpCode): bool {.inline.} =
-  int(code) in 500 .. 599
+  code >= Http500
 
 func `$`*(code: HttpCode): string =
   ## Returns the code and reason phrase, e.g. "404 Not Found", or the bare
