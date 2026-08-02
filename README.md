@@ -115,7 +115,7 @@ HttpCode, Http200..Http511, is1xx..is5xx, `$` # "404 Not Found"
 QueryParams, encodeQueryComponent, decodeQueryComponent
 
 # relay/retry: optional retry policy
-RetryPolicy, defaultRetryPolicy, backoffBaseMs, retryDelayMs,
+RetryPolicy, initRetryPolicy, backoffBaseMs, retryDelayMs,
 isRetryable
 ```
 
