@@ -116,7 +116,7 @@ QueryParams, encodeQueryComponent, decodeQueryComponent
 
 # relay/retry: optional retry policy
 RetryPolicy, defaultRetryPolicy, backoffBaseMs, retryDelayMs,
-isRetryableStatus, isRetryableTransport
+isRetryable
 ```
 
 `Response.code` is an `HttpCode`; classify it directly:

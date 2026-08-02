@@ -46,7 +46,7 @@ proc retryDelayMs*(rng: var Rand; attempt: int; policy: RetryPolicy): int =
   let jitter = rng.rand(jitterMax)
   result = capped + jitter
 
-proc isRetryableStatus*(code: HttpCode): bool {.inline.} =
+proc isRetryable*(code: HttpCode): bool {.inline.} =
   ## Returns true for 408, 409, 425, 429, and any 5xx status.
   case code
   of Http408, Http409, Http425, Http429:

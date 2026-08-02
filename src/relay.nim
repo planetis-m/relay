@@ -92,7 +92,7 @@ type
     readyResults: Deque[RequestResult]
   Relay* = ref RelayObj
 
-proc isRetryableTransport*(kind: TransportErrorKind): bool {.inline.} =
+proc isRetryable*(kind: TransportErrorKind): bool {.inline.} =
   ## Returns true for timeouts, network, DNS, TLS, and internal errors.
   case kind
   of teTimeout, teNetwork, teDns, teTls, teInternal:
