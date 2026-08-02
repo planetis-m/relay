@@ -2,7 +2,7 @@ import std/random
 import relay
 
 proc main =
-  let policy = defaultRetryPolicy(
+  let policy = initRetryPolicy(
     maxAttempts = 5,
     baseDelayMs = RetryBaseDelayMs,
     maxDelayMs = RetryMaxDelayMs,
