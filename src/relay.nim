@@ -1,10 +1,11 @@
 import std/[deques, locks, tables]
 import ./relay/bindings/curl
-import ./relay/[http_headers, http_query, http_status, curl_wrap]
+import ./relay/[http_headers, http_query, http_status, retry, curl_wrap]
 
 export http_headers
 export http_query
 export http_status
+export retry
 
 const
   MultiWaitMaxMs = 250
@@ -90,6 +91,14 @@ type
     inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[RequestResult]
   Relay* = ref RelayObj
+
+proc isRetryableTransport*(kind: TransportErrorKind): bool {.inline.} =
+  ## Returns true for timeouts, network, DNS, TLS, and internal errors.
+  case kind
+  of teTimeout, teNetwork, teDns, teTls, teInternal:
+    result = true
+  of teNone, teCanceled, teProtocol:
+    result = false
 
 proc noTransportError(): TransportError {.inline.} =
   TransportError(kind: teNone, message: "", curlCode: 0)
