@@ -31,3 +31,4 @@
 /tests/test_lifecycle_contracts
 /tests/test_parse_headers
 /tests/test_query_params
+/tests/test_http_status
