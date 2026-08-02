@@ -8,6 +8,9 @@ It gives you:
 - the same verb helpers for single calls and batches (`get`, `post`, `put`, `patch`, `delete`, `head`)
 - two execution styles: blocking (`makeRequest`, `makeRequests`) or incremental draining (`startRequests` + `waitForResult`/`pollForResult`)
 - operational controls for running pipelines (`queueLen`, `numInFlight`, `clearQueue`, `abort`)
+- typed HTTP status codes with class classifiers (`HttpCode`, `is2xx`...)
+- URL query parameter helpers (`QueryParams`)
+- optional retry policy with backoff and jitter (`relay/retry`)
 
 ## Install
 
@@ -99,6 +102,30 @@ Public API is exported from `src/relay.nim`.
   - `teCanceled`
   - `teProtocol`
   - `teInternal`
+
+### Status, Query, and Retry Helpers
+
+`import relay` exports the following helpers from its submodules:
+
+```nim
+# relay/http_status: typed status codes and classifiers
+HttpCode, Http200..Http511, is1xx..is5xx, `$` # "404 Not Found"
+
+# relay/http_query: URL query parameters
+QueryParams, encodeQueryComponent, decodeQueryComponent
+
+# relay/retry: optional retry policy
+RetryPolicy, defaultRetryPolicy, backoffBaseMs, retryDelayMs,
+isRetryableStatus, isRetryableTransport
+```
+
+`Response.code` is an `HttpCode`; classify it directly:
+
+```nim
+if is2xx(item.response.code):
+  discard
+echo $item.response.code # "200 OK"
+```
 
 ### Client Lifecycle
 
@@ -232,7 +259,7 @@ proc queueLen*(client: Relay): int
 for item in client.makeRequests(batch):
   if item.error.kind == teNone:
     # HTTP transport succeeded; still check status code policy in app layer.
-    if item.response.code div 100 == 2:
+    if is2xx(item.response.code):
       discard
     else:
       echo "http error status=", item.response.code
