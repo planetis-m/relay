@@ -1,8 +1,9 @@
 import std/[deques, locks, tables]
 import ./relay/bindings/curl
-import ./relay/[http_headers, curl_wrap]
+import ./relay/[http_headers, http_query, curl_wrap]
 
 export http_headers
+export http_query
 
 const
   MultiWaitMaxMs = 250
