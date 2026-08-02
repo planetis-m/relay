@@ -40,7 +40,7 @@ type
     requestId*: int64
 
   Response* = object
-    code*: int
+    code*: HttpCode
     url*: string
     headers*: HttpHeaders
     body*: string
@@ -142,7 +142,7 @@ proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
 
 proc newResponse(request: RequestWrap): Response {.inline.} =
   Response(
-    code: 0,
+    code: HttpCode(0),
     url: request.url,
     headers: @[],
     body: "",
@@ -194,7 +194,7 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     )
   else:
     try:
-      result.response.code = request.easy.responseCode()
+      result.response.code = HttpCode(request.easy.responseCode())
       let effective = request.easy.effectiveUrl()
       if effective.len > 0:
         result.response.url = effective

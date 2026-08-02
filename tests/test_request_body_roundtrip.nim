@@ -149,7 +149,7 @@ proc main =
 
   let postResult = client.post(url, body = "post-body", requestId = 1, timeoutMs = 2_000)
   doAssert postResult.error.kind == teNone
-  doAssert postResult.response.code == 200
+  doAssert postResult.response.code == Http200
 
   let postBodyWithHeaders = """{"field":"value","count":1}"""
   var headers = emptyHttpHeaders()
@@ -158,15 +158,15 @@ proc main =
   let headerPostResult = client.post(
     url, headers, body = postBodyWithHeaders, requestId = 2, timeoutMs = 2_000)
   doAssert headerPostResult.error.kind == teNone
-  doAssert headerPostResult.response.code == 200
+  doAssert headerPostResult.response.code == Http200
 
   let putResult = client.put(url, body = "put-body", requestId = 3, timeoutMs = 2_000)
   doAssert putResult.error.kind == teNone
-  doAssert putResult.response.code == 200
+  doAssert putResult.response.code == Http200
 
   let patchResult = client.patch(url, body = "patch-body", requestId = 4, timeoutMs = 2_000)
   doAssert patchResult.error.kind == teNone
-  doAssert patchResult.response.code == 200
+  doAssert patchResult.response.code == Http200
 
   acquire(server.lock)
   let captured = server.captured
