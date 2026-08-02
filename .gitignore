@@ -22,3 +22,12 @@
 
 # OS
 .DS_Store
+
+# Test binaries
+/tests/test_batch_helpers
+/tests/test_single_request_helpers
+/tests/test_request_body_roundtrip
+/tests/test_ordering_contract
+/tests/test_lifecycle_contracts
+/tests/test_parse_headers
+/tests/test_query_params
