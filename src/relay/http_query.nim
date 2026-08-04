@@ -13,6 +13,7 @@ proc emptyQueryParams*(): QueryParams =
 proc contains*(query: QueryParams; key: string): bool =
   ## Returns true if there is at least one pair with the given key.
   ## Use `key in query` or `key notin query`.
+  result = false
   for (k, _) in query.items:
     if k == key:
       return true
@@ -20,6 +21,7 @@ proc contains*(query: QueryParams; key: string): bool =
 proc `[]`*(query: QueryParams; key: string): string =
   ## Returns the value of the first pair with the given key, or "" if absent.
   ## Use a for loop over `query.items` to read multiple pairs with the same key.
+  result = ""
   for (k, v) in query.items:
     if k == key:
       return v
@@ -44,6 +46,7 @@ proc getOrDefault*(query: QueryParams; key, default: string): string =
 
 proc getAll*(query: QueryParams; key: string): seq[string] =
   ## Returns the values of every pair with the given key.
+  result = @[]
   for (k, v) in query.items:
     if k == key:
       result.add(v)
