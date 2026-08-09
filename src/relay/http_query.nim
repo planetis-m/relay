@@ -67,7 +67,7 @@ proc encodeQueryComponent*(s: string): string =
 proc decodeQueryComponent*(s: string): string =
   ## Decodes `s` from the x-www-form-urlencoded format. Raises `ValueError`
   ## on malformed percent-encoding.
-  result = newStringOfCap(s.len)
+  var r = newStringOfCap(s.len)
   var i = 0
   while i < s.len:
     case s[i]
@@ -77,13 +77,14 @@ proc decodeQueryComponent*(s: string): string =
       var v: uint8
       if parseHex(s, v, i + 1, 2) == 0:
         raise newException(ValueError, "invalid percent-encoding in query component")
-      result.add v.char
+      r.add v.char
       i += 2
     of '+':
-      result.add ' '
+      r.add ' '
     else:
-      result.add s[i]
+      r.add s[i]
     inc i
+  result = r
 
 proc `$`*(query: QueryParams): string =
   ## Serializes to `key=value&key=value` with components percent-encoded.
