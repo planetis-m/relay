@@ -1,5 +1,5 @@
 # Package
-version = "0.2.7"
+version = "1.0.0"
 author = "planetis"
 description = "Relay: parallel HTTP batching for Nim"
 license = "MIT"
