@@ -5,7 +5,7 @@ Relay is a Nim HTTP client for high-throughput batches and single requests, with
 It gives you:
 
 - bounded parallel HTTP work with queueing (`maxInFlight`)
-- the same verb helpers for single calls and batches (`get`, `post`, `put`, `patch`, `delete`, `head`)
+- the same verb helpers for single calls and batches (`get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `connect`, `trace`)
 - two execution styles: blocking (`makeRequest`, `makeRequests`) or incremental draining (`startRequests` + `waitForResult`/`pollForResult`)
 - operational controls for running pipelines (`queueLen`, `numInFlight`, `clearQueue`, `abort`)
 - typed HTTP status codes with class classifiers (`HttpCode`, `is2xx`...)
@@ -87,7 +87,7 @@ Public API is exported from `src/relay.nim`.
 ### Core Types
 
 - `HttpHeaders = seq[tuple[name: string, value: string]]`
-- `HttpVerb = enum hvGet = "GET", hvPost = "POST", hvPut = "PUT", hvPatch = "PATCH", hvDelete = "DELETE", hvHead = "HEAD"`
+- `HttpVerb = enum hvGet = "GET", hvPost = "POST", hvPut = "PUT", hvPatch = "PATCH", hvDelete = "DELETE", hvHead = "HEAD", hvOptions = "OPTIONS", hvConnect = "CONNECT", hvTrace = "TRACE"`
 - `RequestSpec`: request definition (`verb`, `url`, `headers`, `body`, `requestId`,
   `timeoutMs`)
 - `RequestBatch`: mutable batch builder
