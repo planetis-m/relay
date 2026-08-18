@@ -12,16 +12,13 @@ const
   DefaultConnectTimeoutMs = 10_000
 
 type
-  HttpVerb* = enum ## Common HTTP methods.
+  HttpVerb* = enum
     hvGet = "GET",
     hvPost = "POST",
     hvPut = "PUT",
     hvPatch = "PATCH",
     hvDelete = "DELETE",
-    hvHead = "HEAD",
-    hvOptions = "OPTIONS",
-    hvConnect = "CONNECT",
-    hvTrace = "TRACE"
+    hvHead = "HEAD"
 
   TransportErrorKind* = enum
     teNone,
@@ -39,7 +36,7 @@ type
     curlCode*: int
 
   RequestInfo* = object
-    verb*: string
+    verb*: HttpVerb
     url*: string
     requestId*: int64
 
@@ -51,7 +48,7 @@ type
     request*: RequestInfo
 
   RequestSpec* = object
-    verb*: string
+    verb*: HttpVerb
     url*: string
     headers*: HttpHeaders
     body*: string
@@ -65,7 +62,7 @@ type
     requests: seq[RequestSpec]
 
   RequestWrap = ref object
-    verb: string
+    verb: HttpVerb
     url: string
     headers: HttpHeaders
     body: string
@@ -174,8 +171,8 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   easy.setUrl(request.url)
   easy.setHttpVersion2Tls()
 
-  easy.setMethod(request.verb)
-  easy.setNoBody(request.verb == "HEAD")
+  easy.setMethod($request.verb)
+  easy.setNoBody(request.verb == hvHead)
   if request.body.len > 0:
     easy.setRequestBody(request.body)
 
@@ -462,7 +459,7 @@ proc clientIsBusy(client: Relay): bool =
 
 proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
   RequestWrap(
-    verb: move request.verb,
+    verb: request.verb,
     url: move request.url,
     headers: move request.headers,
     body: move request.body,
@@ -543,19 +540,6 @@ proc makeVerbRequest(client: Relay; verb: HttpVerb; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult {.inline.} =
   client.makeRequest(RequestSpec(
-    verb: $verb,
-    url: url,
-    headers: headers,
-    body: body,
-    requestId: requestId,
-    timeoutMs: timeoutMs
-  ))
-
-proc makeRequest*(client: Relay; verb: sink string; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    requestId = 0'i64; timeoutMs = 0): RequestResult {.inline.} =
-  ## Executes one request with an arbitrary HTTP method token.
-  client.makeRequest(RequestSpec(
     verb: verb,
     url: url,
     headers: headers,
@@ -594,31 +578,15 @@ proc head*(client: Relay; url: sink string;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvHead, url, headers, "", requestId, timeoutMs)
 
-proc options*(client: Relay; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
-    timeoutMs = 0): RequestResult =
-  client.makeVerbRequest(hvOptions, url, headers, "", requestId, timeoutMs)
-
-proc connect*(client: Relay; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
-    timeoutMs = 0): RequestResult =
-  client.makeVerbRequest(hvConnect, url, headers, "", requestId, timeoutMs)
-
-proc trace*(client: Relay; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
-    timeoutMs = 0): RequestResult =
-  client.makeVerbRequest(hvTrace, url, headers, "", requestId, timeoutMs)
-
 proc len*(batch: RequestBatch): int {.inline.} =
   batch.requests.len
 
 proc `[]`*(batch: RequestBatch; i: int): lent RequestSpec =
   batch.requests[i]
 
-proc addRequest*(batch: var RequestBatch; verb: sink string; url: sink string;
+proc addRequest*(batch: var RequestBatch; verb: HttpVerb; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0) {.inline.} =
-  ## Adds a request with an arbitrary HTTP method token.
   batch.requests.add(RequestSpec(
     verb: verb,
     url: url,
@@ -627,12 +595,6 @@ proc addRequest*(batch: var RequestBatch; verb: sink string; url: sink string;
     requestId: requestId,
     timeoutMs: timeoutMs
   ))
-
-proc addRequest*(batch: var RequestBatch; verb: HttpVerb; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
-    requestId = 0'i64; timeoutMs = 0) {.inline.} =
-  ## Enum shorthand for `verb`; converts to its HTTP method token.
-  batch.addRequest($verb, url, headers, body, requestId, timeoutMs)
 
 proc get*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
@@ -663,18 +625,3 @@ proc head*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
   batch.addRequest(hvHead, url, headers, "", requestId, timeoutMs)
-
-proc options*(batch: var RequestBatch; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
-    timeoutMs = 0) =
-  batch.addRequest(hvOptions, url, headers, "", requestId, timeoutMs)
-
-proc connect*(batch: var RequestBatch; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
-    timeoutMs = 0) =
-  batch.addRequest(hvConnect, url, headers, "", requestId, timeoutMs)
-
-proc trace*(batch: var RequestBatch; url: sink string;
-    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
-    timeoutMs = 0) =
-  batch.addRequest(hvTrace, url, headers, "", requestId, timeoutMs)

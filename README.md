@@ -5,7 +5,7 @@ Relay is a Nim HTTP client for high-throughput batches and single requests, with
 It gives you:
 
 - bounded parallel HTTP work with queueing (`maxInFlight`)
-- the same verb helpers for single calls and batches (`get`, `post`, `put`, `patch`, `delete`, `head`, `options`, `connect`, `trace`) plus arbitrary HTTP methods via string tokens
+- the same verb helpers for single calls and batches (`get`, `post`, `put`, `patch`, `delete`, `head`)
 - two execution styles: blocking (`makeRequest`, `makeRequests`) or incremental draining (`startRequests` + `waitForResult`/`pollForResult`)
 - operational controls for running pipelines (`queueLen`, `numInFlight`, `clearQueue`, `abort`)
 - typed HTTP status codes with class classifiers (`HttpCode`, `is2xx`...)
@@ -87,9 +87,9 @@ Public API is exported from `src/relay.nim`.
 ### Core Types
 
 - `HttpHeaders = seq[tuple[name: string, value: string]]`
-- `HttpVerb = enum hvGet = "GET", hvPost = "POST", hvPut = "PUT", hvPatch = "PATCH", hvDelete = "DELETE", hvHead = "HEAD", hvOptions = "OPTIONS", hvConnect = "CONNECT", hvTrace = "TRACE"`
-- `RequestSpec`: request definition (`verb` (any method token as a string),
-  `url`, `headers`, `body`, `requestId`, `timeoutMs`)
+- `HttpVerb = enum hvGet = "GET", hvPost = "POST", hvPut = "PUT", hvPatch = "PATCH", hvDelete = "DELETE", hvHead = "HEAD"`
+- `RequestSpec`: request definition (`verb`, `url`, `headers`, `body`, `requestId`,
+  `timeoutMs`)
 - `RequestBatch`: mutable batch builder
 - `RequestResult = tuple[response: Response, error: TransportError]`
 - `RequestResults = seq[RequestResult]`
@@ -158,9 +158,6 @@ proc abort*(client: Relay)
 proc addRequest*(batch: var RequestBatch; verb: HttpVerb; url: string;
     headers = emptyHttpHeaders();
     body = ""; requestId = 0'i64; timeoutMs = 0)
-proc addRequest*(batch: var RequestBatch; verb: string; url: string;
-    headers = emptyHttpHeaders();
-    body = ""; requestId = 0'i64; timeoutMs = 0)
 proc get*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0)
 proc post*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
@@ -172,12 +169,6 @@ proc patch*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
 proc delete*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0)
 proc head*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    requestId = 0'i64; timeoutMs = 0)
-proc options*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    requestId = 0'i64; timeoutMs = 0)
-proc connect*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
-    requestId = 0'i64; timeoutMs = 0)
-proc trace*(batch: var RequestBatch; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0)
 ```
 
@@ -201,9 +192,6 @@ proc waitForResult*(client: Relay; outResult: var RequestResult): bool
 proc pollForResult*(client: Relay; outResult: var RequestResult): bool
 proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults
 proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult
-proc makeRequest*(client: Relay; verb: string; url: string;
-    headers = emptyHttpHeaders(); body = ""; requestId = 0'i64;
-    timeoutMs = 0): RequestResult
 proc get*(client: Relay; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0): RequestResult
 proc post*(client: Relay; url: string; headers = emptyHttpHeaders();
@@ -215,12 +203,6 @@ proc patch*(client: Relay; url: string; headers = emptyHttpHeaders();
 proc delete*(client: Relay; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0): RequestResult
 proc head*(client: Relay; url: string; headers = emptyHttpHeaders();
-    requestId = 0'i64; timeoutMs = 0): RequestResult
-proc options*(client: Relay; url: string; headers = emptyHttpHeaders();
-    requestId = 0'i64; timeoutMs = 0): RequestResult
-proc connect*(client: Relay; url: string; headers = emptyHttpHeaders();
-    requestId = 0'i64; timeoutMs = 0): RequestResult
-proc trace*(client: Relay; url: string; headers = emptyHttpHeaders();
     requestId = 0'i64; timeoutMs = 0): RequestResult
 ```
 
@@ -239,7 +221,7 @@ proc trace*(client: Relay; url: string; headers = emptyHttpHeaders();
 
 ```nim
 let single = client.makeRequest(RequestSpec(
-  verb: $hvPost,
+  verb: hvPost,
   url: "https://example.com/api",
   headers: emptyHttpHeaders(),
   body: """{"x":1}""",
@@ -248,20 +230,8 @@ let single = client.makeRequest(RequestSpec(
 ))
 ```
 
-Client verb helpers (`client.get/post/put/patch/delete/head/options/connect/trace`)
-are convenience wrappers around `makeRequest`.
-
-`RequestSpec.verb` is a plain string, so any HTTP method token works, registered
-or custom:
-
-```nim
-let dav = client.makeRequest("PROPFIND", "https://dav.example.com/")
-
-var batch: RequestBatch
-batch.addRequest("PURGE", "https://cdn.example.com/assets", requestId = 12)
-```
-
-`Response.request.verb` reports the exact method that was sent.
+Client verb helpers (`client.get/post/put/patch/delete/head`) are convenience
+wrappers around `makeRequest`.
 
 ### Queue / State Helpers
 
