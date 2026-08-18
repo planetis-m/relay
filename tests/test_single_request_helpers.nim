@@ -39,6 +39,9 @@ proc main =
   checkResult(client.patch(UnreachableA, body = "z", requestId = 204, timeoutMs = 200), hvPatch, 204, UnreachableA)
   checkResult(client.delete(UnreachableA, requestId = 205, timeoutMs = 200), hvDelete, 205, UnreachableA)
   checkResult(client.head(UnreachableA, requestId = 206, timeoutMs = 200), hvHead, 206, UnreachableA)
+  checkResult(client.options(UnreachableA, requestId = 207, timeoutMs = 200), hvOptions, 207, UnreachableA)
+  checkResult(client.connect(UnreachableA, requestId = 208, timeoutMs = 200), hvConnect, 208, UnreachableA)
+  checkResult(client.trace(UnreachableA, requestId = 209, timeoutMs = 200), hvTrace, 209, UnreachableA)
 
   var inFlightBatch: RequestBatch
   let pendingCount = 8

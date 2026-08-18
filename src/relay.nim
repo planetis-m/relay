@@ -18,7 +18,10 @@ type
     hvPut = "PUT",
     hvPatch = "PATCH",
     hvDelete = "DELETE",
-    hvHead = "HEAD"
+    hvHead = "HEAD",
+    hvOptions = "OPTIONS",
+    hvConnect = "CONNECT",
+    hvTrace = "TRACE"
 
   TransportErrorKind* = enum
     teNone,
@@ -578,6 +581,21 @@ proc head*(client: Relay; url: sink string;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvHead, url, headers, "", requestId, timeoutMs)
 
+proc options*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvOptions, url, headers, "", requestId, timeoutMs)
+
+proc connect*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvConnect, url, headers, "", requestId, timeoutMs)
+
+proc trace*(client: Relay; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0): RequestResult =
+  client.makeVerbRequest(hvTrace, url, headers, "", requestId, timeoutMs)
+
 proc len*(batch: RequestBatch): int {.inline.} =
   batch.requests.len
 
@@ -625,3 +643,18 @@ proc head*(batch: var RequestBatch; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0) =
   batch.addRequest(hvHead, url, headers, "", requestId, timeoutMs)
+
+proc options*(batch: var RequestBatch; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0) =
+  batch.addRequest(hvOptions, url, headers, "", requestId, timeoutMs)
+
+proc connect*(batch: var RequestBatch; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0) =
+  batch.addRequest(hvConnect, url, headers, "", requestId, timeoutMs)
+
+proc trace*(batch: var RequestBatch; url: sink string;
+    headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
+    timeoutMs = 0) =
+  batch.addRequest(hvTrace, url, headers, "", requestId, timeoutMs)
