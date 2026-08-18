@@ -26,6 +26,7 @@ proc runSuite(flags: string) =
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_batch_helpers tests/test_batch_helpers.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_single_request_helpers tests/test_single_request_helpers.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_request_body_roundtrip tests/test_request_body_roundtrip.nim"
+  runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_custom_method tests/test_custom_method.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_ordering_contract tests/test_ordering_contract.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_lifecycle_contracts tests/test_lifecycle_contracts.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_parse_headers tests/test_parse_headers.nim"
