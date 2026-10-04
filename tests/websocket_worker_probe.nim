@@ -39,13 +39,14 @@ proc main() =
       let client = newWebSocket(defaultTimeoutMs = 1500, maxMessageBytes = 8,
         bypassProxy = true)
       try:
-        for invalid in ["http://example.com/", url & "#fragment"]:
-          doAssertRaises ValueError: client.connect(invalid)
+        when not defined(danger):
+          doAssertRaises AssertionDefect: client.connect(url & "#fragment")
         client.connect(url)
         when not defined(danger):
           doAssertRaises AssertionDefect: client.connect(url)
-        for invalid in ["\xff", repeat('x', 9)]:
-          doAssertRaises ValueError: client.send(invalid)
+        when not defined(danger):
+          for invalid in ["\xff", repeat('x', 9)]:
+            doAssertRaises AssertionDefect: client.send(invalid)
         client.send("echo")
         doAssert client.receive() == "echo"
         doAssertRaises TimeoutError: discard client.receive(timeoutMs = 30)
@@ -54,13 +55,13 @@ proc main() =
       finally:
         client.close()
     elif mode == "text-failure":
-      let failed = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
-      try:
-        doAssertRaises IOError: failed.connect(url & "bad")
-        # Failed connect leaves the owner open for caller-managed cleanup.
-        doAssertRaises ValueError: failed.connect("http://example.com/")
-      finally:
-        failed.close()
+      for invalid in [url & "bad", url.replace("ws://", "http://"),
+          url.replace("ws://", "ws://user:pass@")]:
+        let failed = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
+        try:
+          doAssertRaises IOError: failed.connect(invalid)
+        finally:
+          failed.close()
       let peer = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
       try:
         peer.connect(url & "close")
@@ -73,7 +74,6 @@ proc main() =
           doAssert error.msg == "Peer closed the WebSocket connection"
         when not defined(danger):
           doAssertRaises AssertionDefect: peer.send("disconnected")
-        doAssertRaises ValueError: peer.connect("http://example.com/")
       finally:
         peer.close()
     elif mode.startsWith("tls"):
