@@ -40,7 +40,7 @@ block curlOwners:
   cleanupGlobal()
 
 block serviceOwnership:
-  let client = newWebSocketService()
+  let client = newWebSocketClient()
   let alias = client
   var item: WebSocketResult
   doAssert not client.pollForResult(item)
@@ -48,9 +48,9 @@ block serviceOwnership:
   client.close()
   doAssert not client.waitForResult(item)
   doAssertRaises IOError: discard client.startConnect("ws://127.0.0.1:1/")
-  close(WebSocketService(nil))
-  abort(WebSocketService(nil))
-  discard newWebSocketService()
+  close(WebSocketClient(nil))
+  abort(WebSocketClient(nil))
+  discard newWebSocketClient()
 
 block disconnected:
   let client = newWebSocket()

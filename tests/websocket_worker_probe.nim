@@ -3,19 +3,19 @@ import std/[assertions, monotimes, os, strutils, times]
 import relay
 import relay/websocket
 
-proc resultFor(service: WebSocketService; operation: OperationId): WebSocketResult =
+proc resultFor(service: WebSocketClient; operation: OperationId): WebSocketResult =
   doAssert service.waitForResult(result)
   doAssert result.operationId == operation
 
-proc eventFor(service: WebSocketService; id: ConnectionId): WebSocketEvent =
+proc eventFor(service: WebSocketClient; id: ConnectionId): WebSocketEvent =
   doAssert service.waitForEvent(id, result, 1500)
 
-proc opened(service: WebSocketService; url: string): ConnectionId =
+proc opened(service: WebSocketClient; url: string): ConnectionId =
   let ids = service.startConnect(url)
   doAssert service.resultFor(ids.operationId).error.kind == teNone
   result = ids.connectionId
 
-proc text(service: WebSocketService; id: ConnectionId; data: string): OperationId =
+proc text(service: WebSocketClient; id: ConnectionId; data: string): OperationId =
   service.startSend(id, WebSocketMessage(kind: wmText, data: data))
 
 type Waiter = object
@@ -25,13 +25,13 @@ type Waiter = object
   event: WebSocketEvent
 
 proc awaitEvent(waiter: ptr Waiter) {.thread.} =
-  let service = cast[WebSocketService](waiter.service)
+  let service = cast[WebSocketClient](waiter.service)
   waiter.received = service.waitForEvent(waiter.id, waiter.event, 1500)
 
 proc main() =
   let url = paramStr(1)
   let mode = paramStr(2)
-  let service = newWebSocketService(maxConnections = 2, maxCommands = 2,
+  let service = newWebSocketClient(maxConnections = 2, maxCommands = 2,
     maxEvents = 2, maxQueuedBytes = if mode == "bytes": 8 else: 32 * 1024 * 1024,
     defaultTimeoutMs = 1500, bypassProxy = true, caInfo = paramStr(3))
   try:
@@ -101,7 +101,7 @@ proc main() =
       service.abort()
     elif mode == "drop-service":
       block:
-        let temporary = newWebSocketService(bypassProxy = true)
+        let temporary = newWebSocketClient(bypassProxy = true)
         discard temporary.opened(url)
         discard temporary.opened(url)
         let http = newHttpClient()

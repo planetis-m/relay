@@ -42,10 +42,10 @@ type
     terminalError: TransportError
     cancelRequested, closeRequested: bool
   # Locks/conditions have identity; destructors must borrow rather than copy them.
-  WebSocketServiceObj {.byref.} = object
+  WebSocketClientObj {.byref.} = object
     lock: Lock
     resultCond: Cond
-    thread: Thread[ptr WebSocketServiceObj]
+    thread: Thread[ptr WebSocketClientObj]
     initialized, threadStarted, started, running, stopping, aborting, closed: bool
     startupError: string
     wakeHandle: CURLM # Only curl_multi_wakeup may touch this handle outside worker.
@@ -58,7 +58,7 @@ type
     defaultTimeoutMs, maxMessageBytes, closeTimeoutMs: int
     bypassProxy: bool
     proxy, caInfo: string
-  WebSocketService* = ref WebSocketServiceObj
+  WebSocketClient* = ref WebSocketClientObj
   Handshake = object
     expected: string
     accepted: bool
@@ -78,15 +78,15 @@ type
     controlOffset: int
     closeDeadline: MonoTime
   WebSocketObj = object
-    service: WebSocketService
+    service: WebSocketClient
     id: ConnectionId
     connected, closed: bool
   WebSocket* = ref WebSocketObj
 
-proc stop(client: ptr WebSocketServiceObj; aborting: bool) {.raises: [].}
+proc stop(client: ptr WebSocketClientObj; aborting: bool) {.raises: [].}
 
-proc `=destroy`(client: WebSocketServiceObj) =
-  let owner = cast[ptr WebSocketServiceObj](addr client)
+proc `=destroy`(client: WebSocketClientObj) =
+  let owner = cast[ptr WebSocketClientObj](addr client)
   if client.initialized:
     owner.stop(true)
     deinitCond(owner.resultCond)
@@ -100,7 +100,7 @@ proc `=destroy`(client: WebSocketServiceObj) =
 
 proc `=destroy`(client: WebSocketObj) =
   if client.service != nil:
-    cast[ptr WebSocketServiceObj](client.service).stop(true)
+    cast[ptr WebSocketClientObj](client.service).stop(true)
   `=destroy`(client.service)
 
 proc `==`*(a, b: ConnectionId): bool {.borrow.}
@@ -109,24 +109,24 @@ proc `==`*(a, b: OperationId): bool {.borrow.}
 proc handle(conn: Connection): CURL {.inline.} =
   cast[CURL](conn.easy.handleKey())
 
-proc timeout(client: ptr WebSocketServiceObj; timeoutMs: int): int =
+proc timeout(client: ptr WebSocketClientObj; timeoutMs: int): int =
   if timeoutMs > 0: min(timeoutMs, cint.high.int) else: client.defaultTimeoutMs
 
-proc mailbox(client: ptr WebSocketServiceObj; id: ConnectionId): Mailbox =
+proc mailbox(client: ptr WebSocketClientObj; id: ConnectionId): Mailbox =
   for item in client.mailboxes:
     if item.id == id: return item
 
-proc wake(client: ptr WebSocketServiceObj) =
+proc wake(client: ptr WebSocketClientObj) =
   client.wakeHandle.wakeup()
 
-proc completion(client: ptr WebSocketServiceObj; cmd: Command; error = TransportError()) =
+proc completion(client: ptr WebSocketClientObj; cmd: Command; error = TransportError()) =
   acquire(client.lock)
   client.results.addLast(WebSocketResult(connectionId: cmd.connectionId,
     operationId: cmd.operationId, error: error))
   broadcast(client.resultCond)
   release(client.lock)
 
-proc finish(client: ptr WebSocketServiceObj; multi: CURLM; conn: Connection;
+proc finish(client: ptr WebSocketClientObj; multi: CURLM; conn: Connection;
     error: TransportError) =
   if not conn.finished:
     conn.finished = true
@@ -163,7 +163,7 @@ proc headerCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize
       else: discard
     if valid: result = total
 
-proc configure(client: ptr WebSocketServiceObj; multi: CURLM; conn: Connection) =
+proc configure(client: ptr WebSocketClientObj; multi: CURLM; conn: Connection) =
   let duration = max(1, int((conn.connectCommand.deadline - getMonoTime()).inMilliseconds))
   conn.easy = initEasy()
   let key = encode(urandom(16))
@@ -191,7 +191,7 @@ proc configure(client: ptr WebSocketServiceObj; multi: CURLM; conn: Connection) 
   checkMulti(curl_multi_add_handle(multi, conn.handle()), "curl_multi_add_handle failed")
   conn.attached = true
 
-proc publish(client: ptr WebSocketServiceObj; conn: Connection) =
+proc publish(client: ptr WebSocketClientObj; conn: Connection) =
   acquire(client.lock)
   try:
     if conn.mailbox.events.len >= client.maxEvents or
@@ -204,7 +204,7 @@ proc publish(client: ptr WebSocketServiceObj; conn: Connection) =
   finally:
     release(client.lock)
 
-proc readFrames(client: ptr WebSocketServiceObj; conn: Connection) =
+proc readFrames(client: ptr WebSocketClientObj; conn: Connection) =
   var buffer: array[16 * 1024, char]
   var blocked = false
   for turn in 0..<4:
@@ -291,7 +291,7 @@ proc writeData(conn: Connection; cmd: Command): bool =
   conn.offset += sent.int
   result = code == CURLE_OK and conn.offset == data.len
 
-proc writeFrames(client: ptr WebSocketServiceObj; conn: Connection) =
+proc writeFrames(client: ptr WebSocketClientObj; conn: Connection) =
   # Finish either partially sent frame before switching between data/control queues.
   if conn.sends.len > 0 and conn.controlOffset == 0 and
       (conn.frameStarted or (not conn.closing and conn.controls.len == 0)):
@@ -307,13 +307,13 @@ proc writeFrames(client: ptr WebSocketServiceObj; conn: Connection) =
       discard conn.controls.popFirst()
       conn.controlOffset = 0
 
-proc requestClose(client: ptr WebSocketServiceObj; conn: Connection) =
+proc requestClose(client: ptr WebSocketClientObj; conn: Connection) =
   if not conn.closing:
     conn.closing = true
     conn.closeDeadline = getMonoTime() + initDuration(milliseconds = client.closeTimeoutMs)
     conn.controls.addLast(("", CURLWS_CLOSE))
 
-proc processCommands(client: ptr WebSocketServiceObj; multi: CURLM;
+proc processCommands(client: ptr WebSocketClientObj; multi: CURLM;
     connections: var seq[Connection]) =
   var commands: Deque[Command]
   acquire(client.lock)
@@ -343,7 +343,7 @@ proc processCommands(client: ptr WebSocketServiceObj; multi: CURLM;
     else:
       conn.sends.addLast(cmd)
 
-proc upgrades(client: ptr WebSocketServiceObj; multi: CURLM; connections: seq[Connection]) =
+proc upgrades(client: ptr WebSocketClientObj; multi: CURLM; connections: seq[Connection]) =
   var queued: cint
   var msg = curl_multi_info_read(multi, addr queued)
   while msg != nil:
@@ -363,7 +363,7 @@ proc upgrades(client: ptr WebSocketServiceObj; multi: CURLM; connections: seq[Co
             client.completion(conn.connectCommand)
     msg = curl_multi_info_read(multi, addr queued)
 
-proc workerMain(client: ptr WebSocketServiceObj) {.thread.} =
+proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
   var multi: CURLM
   var globalInitialized = false
   var connections: seq[Connection]
@@ -469,7 +469,7 @@ proc workerMain(client: ptr WebSocketServiceObj) {.thread.} =
     broadcast(client.resultCond)
     release(client.lock)
 
-proc stop(client: ptr WebSocketServiceObj; aborting: bool) =
+proc stop(client: ptr WebSocketClientObj; aborting: bool) =
   # Lifecycle calls belong to the creating thread, matching HttpClient's receiver contract.
   acquire(client.lock)
   let join = not client.closed
@@ -486,14 +486,14 @@ proc stop(client: ptr WebSocketServiceObj; aborting: bool) =
     broadcast(client.resultCond)
     release(client.lock)
 
-proc newWebSocketService*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
+proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
     defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     maxQueuedBytes = 32 * 1024 * 1024; closeTimeoutMs = 100;
-    bypassProxy = false; proxy = ""; caInfo = ""): WebSocketService =
+    bypassProxy = false; proxy = ""; caInfo = ""): WebSocketClient =
   ## One worker owns all curl state. Nonpositive limits clamp to one, like newHttpClient.
   when not defined(gcAtomicArc):
     {.error: "Relay WebSockets require --mm:atomicArc".}
-  let client = WebSocketService(maxConnections: max(1, maxConnections),
+  let client = WebSocketClient(maxConnections: max(1, maxConnections),
     maxCommands: max(1, maxCommands), maxEvents: max(1, maxEvents),
     maxQueuedBytes: max(1, maxQueuedBytes), maxMessageBytes: max(1, maxMessageBytes),
     defaultTimeoutMs: max(1, min(defaultTimeoutMs, cint.high.int)),
@@ -502,24 +502,24 @@ proc newWebSocketService*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
   initLock(client.lock)
   initCond(client.resultCond)
   client.initialized = true
-  createThread(client.thread, workerMain, cast[ptr WebSocketServiceObj](client))
+  createThread(client.thread, workerMain, cast[ptr WebSocketClientObj](client))
   client.threadStarted = true
   acquire(client.lock)
   while not client.started: wait(client.resultCond, client.lock)
   let error = client.startupError
   release(client.lock)
   if error.len > 0:
-    cast[ptr WebSocketServiceObj](client).stop(true)
+    cast[ptr WebSocketClientObj](client).stop(true)
     raise newException(IOError, error)
   result = client
 
-proc close*(client: WebSocketService) =
+proc close*(client: WebSocketClient) =
   ## Stop after bounded close handshakes. Results/events remain drainable after joining.
-  if client != nil: cast[ptr WebSocketServiceObj](client).stop(false)
+  if client != nil: cast[ptr WebSocketClientObj](client).stop(false)
 
-proc abort*(client: WebSocketService) =
+proc abort*(client: WebSocketClient) =
   ## Cancel all work and join. Does not wait for peers or consumer queue space.
-  if client != nil: cast[ptr WebSocketServiceObj](client).stop(true)
+  if client != nil: cast[ptr WebSocketClientObj](client).stop(true)
 
 proc validateUrl(url: string) =
   let u = parseUri(url)
@@ -528,15 +528,15 @@ proc validateUrl(url: string) =
       url.find({'\0'..' ', '\x7f'}) >= 0:
     raise newException(ValueError, "Invalid WebSocket URL")
 
-proc checkAdmission(client: WebSocketService) =
+proc checkAdmission(client: WebSocketClient) =
   if client.closed or client.stopping or not client.running:
-    raise newException(IOError, "WebSocket service is closed")
+    raise newException(IOError, "WebSocket client is closed")
   if client.outstanding >= client.maxCommands:
     raise newException(IOError, "WebSocket command queue is full")
   if client.nextOperation == int64.high:
     raise newException(IOError, "WebSocket operation IDs exhausted")
 
-proc startConnect*(client: WebSocketService; url: sink string; timeoutMs = 0):
+proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
     tuple[connectionId: ConnectionId, operationId: OperationId] =
   validateUrl(url)
   acquire(client.lock)
@@ -552,12 +552,12 @@ proc startConnect*(client: WebSocketService; url: sink string; timeoutMs = 0):
     client.commands.addLast(Command(kind: wcConnect, connectionId: result.connectionId,
       operationId: result.operationId, url: url,
       deadline: getMonoTime() + initDuration(milliseconds =
-        cast[ptr WebSocketServiceObj](client).timeout(timeoutMs))))
-    cast[ptr WebSocketServiceObj](client).wake()
+        cast[ptr WebSocketClientObj](client).timeout(timeoutMs))))
+    cast[ptr WebSocketClientObj](client).wake()
   finally:
     release(client.lock)
 
-proc startSend*(client: WebSocketService; id: ConnectionId;
+proc startSend*(client: WebSocketClient; id: ConnectionId;
     message: sink WebSocketMessage; timeoutMs = 0): OperationId =
   if message.data.len > client.maxMessageBytes or
       (message.kind == wmText and message.data.validateUtf8() >= 0):
@@ -565,7 +565,7 @@ proc startSend*(client: WebSocketService; id: ConnectionId;
   acquire(client.lock)
   try:
     client.checkAdmission()
-    let box = cast[ptr WebSocketServiceObj](client).mailbox(id)
+    let box = cast[ptr WebSocketClientObj](client).mailbox(id)
     if box == nil or box.terminal or box.cancelRequested or box.closeRequested:
       raise newException(IOError, "WebSocket connection unavailable")
     inc client.nextOperation
@@ -573,27 +573,27 @@ proc startSend*(client: WebSocketService; id: ConnectionId;
     result = OperationId(client.nextOperation)
     client.commands.addLast(Command(kind: wcSend, connectionId: id, operationId: result,
       message: message, deadline: getMonoTime() + initDuration(milliseconds =
-        cast[ptr WebSocketServiceObj](client).timeout(timeoutMs))))
-    cast[ptr WebSocketServiceObj](client).wake()
+        cast[ptr WebSocketClientObj](client).timeout(timeoutMs))))
+    cast[ptr WebSocketClientObj](client).wake()
   finally:
     release(client.lock)
 
-proc cancel*(client: WebSocketService; id: ConnectionId) =
+proc cancel*(client: WebSocketClient; id: ConnectionId) =
   ## Out-of-band cancellation works even when the command queue is full.
   acquire(client.lock)
-  let box = cast[ptr WebSocketServiceObj](client).mailbox(id)
+  let box = cast[ptr WebSocketClientObj](client).mailbox(id)
   if box != nil: box.cancelRequested = true
-  cast[ptr WebSocketServiceObj](client).wake()
+  cast[ptr WebSocketClientObj](client).wake()
   release(client.lock)
 
-proc closeConnection*(client: WebSocketService; id: ConnectionId) =
+proc closeConnection*(client: WebSocketClient; id: ConnectionId) =
   acquire(client.lock)
-  let box = cast[ptr WebSocketServiceObj](client).mailbox(id)
+  let box = cast[ptr WebSocketClientObj](client).mailbox(id)
   if box != nil: box.closeRequested = true
-  cast[ptr WebSocketServiceObj](client).wake()
+  cast[ptr WebSocketClientObj](client).wake()
   release(client.lock)
 
-proc retrieveResult(client: WebSocketService; item: var WebSocketResult; blocking: bool): bool =
+proc retrieveResult(client: WebSocketClient; item: var WebSocketResult; blocking: bool): bool =
   acquire(client.lock)
   if blocking:
     while client.results.len == 0 and client.running: wait(client.resultCond, client.lock)
@@ -603,19 +603,19 @@ proc retrieveResult(client: WebSocketService; item: var WebSocketResult; blockin
     result = true
   release(client.lock)
 
-proc pollForResult*(client: WebSocketService; item: var WebSocketResult): bool =
+proc pollForResult*(client: WebSocketClient; item: var WebSocketResult): bool =
   client.retrieveResult(item, false)
 
-proc waitForResult*(client: WebSocketService; item: var WebSocketResult): bool =
+proc waitForResult*(client: WebSocketClient; item: var WebSocketResult): bool =
   client.retrieveResult(item, true)
 
-proc retrieveEvent(client: WebSocketService; id: ConnectionId; item: var WebSocketEvent;
+proc retrieveEvent(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent;
     blocking: bool; timeoutMs: int): bool =
   let deadline = getMonoTime() + initDuration(milliseconds =
-    cast[ptr WebSocketServiceObj](client).timeout(timeoutMs))
+    cast[ptr WebSocketClientObj](client).timeout(timeoutMs))
   acquire(client.lock)
   try:
-    let box = cast[ptr WebSocketServiceObj](client).mailbox(id)
+    let box = cast[ptr WebSocketClientObj](client).mailbox(id)
     if box != nil:
       while blocking and box.events.len == 0 and not box.terminal and client.running and
           getMonoTime() < deadline:
@@ -634,10 +634,10 @@ proc retrieveEvent(client: WebSocketService; id: ConnectionId; item: var WebSock
   finally:
     release(client.lock)
 
-proc pollForEvent*(client: WebSocketService; id: ConnectionId; item: var WebSocketEvent): bool =
+proc pollForEvent*(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent): bool =
   client.retrieveEvent(id, item, false, 0)
 
-proc waitForEvent*(client: WebSocketService; id: ConnectionId; item: var WebSocketEvent;
+proc waitForEvent*(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent;
     timeoutMs = 0): bool =
   ## False on deadline expiry, forgotten ID or stopped worker without an event.
   client.retrieveEvent(id, item, true, timeoutMs)
@@ -648,8 +648,8 @@ proc raiseTransport(error: TransportError) =
 
 proc newWebSocket*(defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     bypassProxy = false): WebSocket =
-  ## Single-connection synchronous convenience owner. Use a service to multiplex.
-  WebSocket(service: newWebSocketService(maxConnections = 1,
+  ## Single-connection synchronous convenience owner. Use WebSocketClient to multiplex.
+  WebSocket(service: newWebSocketClient(maxConnections = 1,
     defaultTimeoutMs = defaultTimeoutMs, maxMessageBytes = maxMessageBytes,
     bypassProxy = bypassProxy))
 
