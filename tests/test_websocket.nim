@@ -56,8 +56,9 @@ block serviceOwnership:
 block disconnected:
   let client = newWebSocket()
   try:
-    doAssertRaises IOError: client.send("hello")
-    doAssertRaises IOError: discard client.receive()
+    when not defined(danger):
+      doAssertRaises AssertionDefect: client.send("hello")
+      doAssertRaises AssertionDefect: discard client.receive()
     for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
         "ws://localhost/#fragment", "ws://localhost/\n", "ws://localhost/\0hidden"]:
       doAssertRaises ValueError: client.connect(url)
@@ -69,9 +70,10 @@ block sharedClose:
   let alias = client
   alias.close()
   client.close()
-  doAssertRaises IOError: client.connect("ws://127.0.0.1:1/")
-  doAssertRaises IOError: client.send("")
-  doAssertRaises IOError: discard alias.receive()
+  when not defined(danger):
+    doAssertRaises AssertionDefect: client.connect("ws://127.0.0.1:1/")
+    doAssertRaises AssertionDefect: client.send("")
+    doAssertRaises AssertionDefect: discard alias.receive()
   close(WebSocket(nil))
 
 block explicitClose:

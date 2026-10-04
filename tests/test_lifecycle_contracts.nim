@@ -1,5 +1,6 @@
 import relay/http
 import std/[algorithm, assertions, locks, net, os]
+from std/nativesockets import getSockName
 
 type
   StallServerObj = object
@@ -23,7 +24,7 @@ proc stallServerMain(serverPtr: ptr StallServerObj) {.thread, raises: [].} =
     listener.bindAddr(Port(0), "127.0.0.1")
     listener.listen()
 
-    let (_, boundPort) = listener.getLocalAddr()
+    let boundPort = getSockName(listener.getFd())
     acquire(server.lock)
     server.listener = listener
     server.port = boundPort

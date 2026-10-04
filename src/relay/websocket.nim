@@ -1,12 +1,13 @@
-## Persistent WebSockets serviced by one worker, independently of Relay HTTP.
-## Requires --mm:atomicArc and --threads:on. Application callbacks stay on consumers.
+## Blocking text WebSockets and a worker for multiple text/binary connections.
+## Requires --threads:on --mm:atomicArc and WebSocket-enabled libcurl 8.14+.
+## Call close or abort before releasing an owner; shutdown belongs to its creating thread.
 import std/[base64, deques, locks, monotimes, sha1, strutils, sysrand, times, unicode, uri]
 import ./[curl_wrap, transport_errors]
 import ./bindings/curl
 export transport_errors
 
 type
-  TimeoutError* = object of IOError
+  TimeoutError* = object of IOError ## Deadline expiry in the blocking text API.
   ConnectionId* = distinct int64
   OperationId* = distinct int64
   MessageKind* = enum
@@ -14,13 +15,13 @@ type
   WebSocketMessage* = object
     kind*: MessageKind
     data*: string
-  WebSocketResult* = object
+  WebSocketResult* = object ## Completion of an accepted connect or send operation.
     connectionId*: ConnectionId
     operationId*: OperationId
     error*: TransportError
   WebSocketEventKind* = enum
     weMessage, weClosed
-  WebSocketEvent* = object
+  WebSocketEvent* = object ## Received message or terminal connection status.
     connectionId*: ConnectionId
     kind*: WebSocketEventKind
     message*: WebSocketMessage
@@ -59,7 +60,7 @@ type
     maxConnections, maxCommands, maxEvents, maxQueuedBytes: int
     defaultTimeoutMs, maxMessageBytes, closeTimeoutMs: int
     bypassProxy: bool
-  WebSocketClient* = ref WebSocketClientObj
+  WebSocketClient* = ref WebSocketClientObj ## One worker for multiple connections.
   Handshake = object
     expected: string
     accepted: bool
@@ -86,7 +87,7 @@ type
     service: WebSocketClient
     id: ConnectionId
     connected, closed: bool
-  WebSocket* = ref WebSocketObj
+  WebSocket* = ref WebSocketObj ## Blocking text connection.
 
 proc `==`*(a, b: ConnectionId): bool {.borrow.}
 proc `==`*(a, b: OperationId): bool {.borrow.}
@@ -99,10 +100,11 @@ proc mailbox(client: WebSocketClientObj; id: ConnectionId): Mailbox =
     if item.id == id: return item
 
 proc completion(client: var WebSocketClientObj; cmd: Command; error = TransportError()) =
-  withLock client.lock:
-    client.results.addLast(WebSocketResult(connectionId: cmd.connectionId,
-      operationId: cmd.operationId, error: error))
-    broadcast(client.resultCond)
+  acquire(client.lock)
+  client.results.addLast(WebSocketResult(connectionId: cmd.connectionId,
+    operationId: cmd.operationId, error: error))
+  broadcast(client.resultCond)
+  release(client.lock)
 
 proc finish(client: var WebSocketClientObj; conn: Connection;
     error: TransportError) =
@@ -121,10 +123,11 @@ proc finish(client: var WebSocketClientObj; conn: Connection;
     conn.flags.excl(cfAttached)
   system.reset(conn.easy)
   reset(conn.headers)
-  withLock client.lock:
-    conn.mailbox.terminal = true
-    conn.mailbox.terminalError = error
-    broadcast(client.resultCond)
+  acquire(client.lock)
+  conn.mailbox.terminal = true
+  conn.mailbox.terminalError = error
+  broadcast(client.resultCond)
+  release(client.lock)
 
 proc headerCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
   let total = size * nitems
@@ -169,7 +172,8 @@ proc configure(client: var WebSocketClientObj; conn: Connection) =
   conn.flags.incl(cfAttached)
 
 proc publish(client: var WebSocketClientObj; conn: Connection) =
-  withLock client.lock:
+  acquire(client.lock)
+  try:
     if conn.mailbox.events.len >= client.maxEvents or
         conn.incoming.data.len > client.maxQueuedBytes - conn.mailbox.bytes:
       raise newException(IOError, "WebSocket event queue overflow")
@@ -177,6 +181,8 @@ proc publish(client: var WebSocketClientObj; conn: Connection) =
     conn.mailbox.events.addLast(WebSocketEvent(connectionId: conn.mailbox.id,
       kind: weMessage, message: move conn.incoming))
     broadcast(client.resultCond)
+  finally:
+    release(client.lock)
 
 proc readFrames(client: var WebSocketClientObj; conn: Connection) =
   var buffer: array[16 * 1024, char]
@@ -277,8 +283,9 @@ proc requestClose(client: WebSocketClientObj; conn: Connection) =
 
 proc processCommands(client: var WebSocketClientObj; connections: var seq[Connection]) =
   var commands: Deque[Command]
-  withLock client.lock:
-    swap(commands, client.commands)
+  acquire(client.lock)
+  swap(commands, client.commands)
+  release(client.lock)
   while commands.len > 0:
     let cmd = commands.popFirst()
     case cmd.kind
@@ -419,14 +426,18 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
     broadcast(client.resultCond)
     release(client.lock)
 
-proc stop(client: var WebSocketClientObj; aborting: bool) =
+proc stop(client: var WebSocketClientObj; aborting: static[bool]) =
   # Lifecycle calls belong to the creating thread, after other callers finish.
   if client.closed: return
-  withLock client.lock:
-    if client.state in {csRunning, csStopping}:
-      client.state = if aborting: csAborting else: csStopping
-    client.multi.wakeup()
-    broadcast(client.resultCond)
+  acquire(client.lock)
+  if client.state in {csRunning, csStopping}:
+    when aborting:
+      client.state = csAborting
+    else:
+      client.state = csStopping
+  client.multi.wakeup()
+  broadcast(client.resultCond)
+  release(client.lock)
   joinThread(client.thread)
   reset(client.multi)
   cleanupCurl()
@@ -438,8 +449,8 @@ proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
     defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     maxQueuedBytes = 32 * 1024 * 1024; closeTimeoutMs = 100;
     bypassProxy = false; proxy = ""; caInfo = ""): WebSocketClient =
+  ## Start a worker. Nonpositive limits clamp to one.
   ## Call close or abort before releasing the client.
-  ## One worker services all connections. Nonpositive limits clamp to one, like newHttpClient.
   let client = WebSocketClient(maxConnections: max(1, maxConnections),
     maxCommands: max(1, maxCommands), maxEvents: max(1, maxEvents),
     maxQueuedBytes: max(1, maxQueuedBytes), maxMessageBytes: max(1, maxMessageBytes),
@@ -452,13 +463,13 @@ proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
   try:
     client.multi = initMulti()
     createThread(client.thread, workerMain, addr client[])
-    result = client
-  finally:
-    if result == nil:
-      reset(client.multi)
-      cleanupCurl()
-      deinitCond(client.resultCond)
-      deinitLock(client.lock)
+  except Exception:
+    reset(client.multi)
+    cleanupCurl()
+    deinitCond(client.resultCond)
+    deinitLock(client.lock)
+    raise
+  result = client
 
 proc close*(client: WebSocketClient) =
   ## Stop after bounded close handshakes. Results/events remain drainable after joining.
@@ -485,10 +496,12 @@ proc checkAdmission(client: WebSocketClient) =
 
 proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
     tuple[connectionId: ConnectionId, operationId: OperationId] =
+  ## Submit a connection attempt; correlate its completion by operationId.
   validateUrl(url)
   if client.closed:
     raise newException(IOError, "WebSocket client is closed")
-  withLock client.lock:
+  acquire(client.lock)
+  try:
     client.checkAdmission()
     if client.mailboxes.len >= client.maxConnections or client.nextConnection == int64.high:
       raise newException(IOError, "WebSocket connection limit reached; drain terminal events")
@@ -502,15 +515,20 @@ proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
       deadline: getMonoTime() + initDuration(milliseconds =
         client[].timeout(timeoutMs))))
     client.multi.wakeup()
+  finally:
+    release(client.lock)
 
 proc startSend*(client: WebSocketClient; id: ConnectionId;
     message: sink WebSocketMessage; timeoutMs = 0): OperationId =
+  ## Submit text or binary data after successful connect completion.
+  ## Invalid text/size raises ValueError; refused admission raises IOError.
   if message.data.len > client.maxMessageBytes or
       (message.kind == wmText and message.data.validateUtf8() >= 0):
     raise newException(ValueError, "Invalid WebSocket text or message size")
   if client.closed:
     raise newException(IOError, "WebSocket client is closed")
-  withLock client.lock:
+  acquire(client.lock)
+  try:
     client.checkAdmission()
     let box = client[].mailbox(id)
     if box == nil or box.terminal or box.cancelRequested or box.closeRequested:
@@ -522,39 +540,44 @@ proc startSend*(client: WebSocketClient; id: ConnectionId;
       message: message, deadline: getMonoTime() + initDuration(milliseconds =
         client[].timeout(timeoutMs))))
     client.multi.wakeup()
+  finally:
+    release(client.lock)
 
 proc cancel*(client: WebSocketClient; id: ConnectionId) =
   ## Out-of-band cancellation works even when the command queue is full.
   if client.closed: return
-  withLock client.lock:
-    let box = client[].mailbox(id)
-    if box != nil: box.cancelRequested = true
-    client.multi.wakeup()
+  acquire(client.lock)
+  let box = client[].mailbox(id)
+  if box != nil: box.cancelRequested = true
+  client.multi.wakeup()
+  release(client.lock)
 
 proc closeConnection*(client: WebSocketClient; id: ConnectionId) =
+  ## Request a bounded close handshake for one connection without waiting.
   if client.closed: return
-  withLock client.lock:
-    let box = client[].mailbox(id)
-    if box != nil: box.closeRequested = true
-    client.multi.wakeup()
+  acquire(client.lock)
+  let box = client[].mailbox(id)
+  if box != nil: box.closeRequested = true
+  client.multi.wakeup()
+  release(client.lock)
 
 proc retrieveResult(client: WebSocketClient; item: var WebSocketResult; blocking: bool): bool =
   let active = not client.closed
   if active: acquire(client.lock)
-  try:
-    while blocking and client.results.len == 0 and client.state != csStopped:
-      wait(client.resultCond, client.lock)
-    if client.results.len > 0:
-      item = client.results.popFirst()
-      dec client.outstanding
-      result = true
-  finally:
-    if active: release(client.lock)
+  while blocking and client.results.len == 0 and client.state != csStopped:
+    wait(client.resultCond, client.lock)
+  if client.results.len > 0:
+    item = client.results.popFirst()
+    dec client.outstanding
+    result = true
+  if active: release(client.lock)
 
 proc pollForResult*(client: WebSocketClient; item: var WebSocketResult): bool =
+  ## Return immediately; true when a completion was retrieved.
   client.retrieveResult(item, false)
 
 proc waitForResult*(client: WebSocketClient; item: var WebSocketResult): bool =
+  ## Wait for a completion; false after the worker stops and results drain.
   client.retrieveResult(item, true)
 
 proc retrieveEvent(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent;
@@ -563,32 +586,31 @@ proc retrieveEvent(client: WebSocketClient; id: ConnectionId; item: var WebSocke
     client[].timeout(timeoutMs))
   let active = not client.closed
   if active: acquire(client.lock)
-  try:
-    let box = client[].mailbox(id)
-    if box != nil:
-      while blocking and box.events.len == 0 and not box.terminal and
-          client.state != csStopped and getMonoTime() < deadline:
-        wait(client.resultCond, client.lock)
-      if box.events.len > 0:
-        item = box.events.popFirst()
-        box.bytes -= item.message.data.len
-        result = true
-      elif box.terminal:
-        item = WebSocketEvent(connectionId: id, kind: weClosed, error: box.terminalError)
-        for i in 0..<client.mailboxes.len:
-          if client.mailboxes[i].id == id:
-            client.mailboxes.delete(i)
-            break
-        result = true
-  finally:
-    if active: release(client.lock)
+  let box = client[].mailbox(id)
+  if box != nil:
+    while blocking and box.events.len == 0 and not box.terminal and
+        client.state != csStopped and getMonoTime() < deadline:
+      wait(client.resultCond, client.lock)
+    if box.events.len > 0:
+      item = box.events.popFirst()
+      box.bytes -= item.message.data.len
+      result = true
+    elif box.terminal:
+      item = WebSocketEvent(connectionId: id, kind: weClosed, error: box.terminalError)
+      for i in 0..<client.mailboxes.len:
+        if client.mailboxes[i].id == id:
+          client.mailboxes.delete(i)
+          break
+      result = true
+  if active: release(client.lock)
 
 proc pollForEvent*(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent): bool =
+  ## Return immediately; true when a message or terminal event was retrieved.
   client.retrieveEvent(id, item, false, 0)
 
 proc waitForEvent*(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent;
     timeoutMs = 0): bool =
-  ## False on deadline expiry, forgotten ID or stopped worker without an event.
+  ## Wait for an event; false on timeout, unknown ID or stopped worker without an event.
   client.retrieveEvent(id, item, true, timeoutMs)
 
 proc raiseTransport(error: TransportError) =
@@ -597,62 +619,49 @@ proc raiseTransport(error: TransportError) =
 
 proc newWebSocket*(defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     bypassProxy = false): WebSocket =
-  ## Call close before releasing the connection.
-  ## Single-connection synchronous convenience owner. Use WebSocketClient to multiplex.
+  ## Create a blocking text connection. Call close before releasing it.
   WebSocket(service: newWebSocketClient(maxConnections = 1,
     defaultTimeoutMs = defaultTimeoutMs, maxMessageBytes = maxMessageBytes,
     bypassProxy = bypassProxy))
 
-proc checkOpen(client: WebSocket; connected = true) =
-  if client == nil or client.closed:
-    raise newException(IOError, "WebSocket client is closed")
-  if connected and not client.connected:
-    raise newException(IOError, "WebSocket client is not connected")
-
 proc close*(client: WebSocket) =
+  ## Close the connection and join its worker. Repeated calls are safe.
   if client != nil and not client.closed:
     client.closed = true
     client.connected = false
     client.service.close()
 
 proc connect*(client: WebSocket; url: string; timeoutMs = 0) =
-  client.checkOpen(false)
+  ## Open a ws/wss connection and propagate connection errors.
+  assert not client.closed, "WebSocket client is closed"
   if client.connected: raise newException(ValueError, "WebSocket client is already connected")
-  try:
-    let ids = client.service.startConnect(url, timeoutMs)
-    client.id = ids.connectionId
-    var completion: WebSocketResult
-    if not client.service.waitForResult(completion):
-      raise newException(IOError, "WebSocket worker stopped")
-    raiseTransport(completion.error)
-    client.connected = true
-  except IOError:
-    client.close()
-    raise
+  let ids = client.service.startConnect(url, timeoutMs)
+  client.id = ids.connectionId
+  var completion: WebSocketResult
+  if not client.service.waitForResult(completion):
+    raise newException(IOError, "WebSocket worker stopped")
+  raiseTransport(completion.error)
+  client.connected = true
 
 proc send*(client: WebSocket; text: string; timeoutMs = 0) =
-  client.checkOpen()
-  try:
-    discard client.service.startSend(client.id,
-      WebSocketMessage(kind: wmText, data: text), timeoutMs)
-    var completion: WebSocketResult
-    if not client.service.waitForResult(completion):
-      raise newException(IOError, "WebSocket worker stopped")
-    raiseTransport(completion.error)
-  except IOError:
-    client.close()
-    raise
+  ## Send UTF-8 text and wait for completion.
+  assert client.connected, "WebSocket client is not connected"
+  discard client.service.startSend(client.id,
+    WebSocketMessage(kind: wmText, data: text), timeoutMs)
+  var completion: WebSocketResult
+  if not client.service.waitForResult(completion):
+    raise newException(IOError, "WebSocket worker stopped")
+  raiseTransport(completion.error)
 
 proc receive*(client: WebSocket; timeoutMs = 0): string =
-  client.checkOpen()
-  try:
-    var event: WebSocketEvent
-    if not client.service.waitForEvent(client.id, event, timeoutMs):
-      raise newException(TimeoutError, "WebSocket receive timed out")
-    if event.kind == weClosed: raiseTransport(event.error)
-    if event.message.kind != wmText:
-      raise newException(IOError, "WebSocket requires text messages")
-    result = move event.message.data
-  except IOError:
-    client.close()
-    raise
+  ## Wait for UTF-8 text; timeout leaves the connection open.
+  assert client.connected, "WebSocket client is not connected"
+  var event: WebSocketEvent
+  if not client.service.waitForEvent(client.id, event, timeoutMs):
+    raise newException(TimeoutError, "WebSocket receive timed out")
+  if event.kind == weClosed:
+    client.connected = false
+    raiseTransport(event.error)
+  if event.message.kind != wmText:
+    raise newException(IOError, "WebSocket requires text messages")
+  result = move event.message.data

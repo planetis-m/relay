@@ -92,10 +92,8 @@ Persistent connection APIs live in `relay/websocket`.
 | `WebSocketClient` | `newWebSocketClient` | One worker for multiple persistent WebSocket connections |
 | `WebSocket` | `newWebSocket` | Synchronous text interface for one WebSocket connection |
 
-HTTP uses `HttpClient`/`newHttpClient`; the old owner and constructor names are removed.
-Request/result names and HTTP verb helpers retain their contracts. `connect` on `HttpClient`
-issues HTTP CONNECT; `connect` on `WebSocket` opens a persistent connection.
-`startConnect` and `startSend` submit operations to `WebSocketClient`.
+`connect` on `HttpClient` issues HTTP CONNECT; on `WebSocket` it opens a persistent
+connection. See [WebSockets](WEBSOCKETS.md) for the worker API.
 
 ### Modules
 
@@ -298,33 +296,23 @@ nim test tests/ci.nims
 
 ## Persistent WebSockets
 
-`import relay/websocket` provides a separate worker servicing multiple persistent
-connections alongside the HTTP worker. See [the contract](WEBSOCKETS.md) for IDs,
-message kinds, bounded queues, deadlines, cancellation and lifecycle.
+Use `WebSocket` for blocking text messages:
 ```nim
 import relay/websocket
 
-let client = newWebSocketClient()
+let socket = newWebSocket()
 try:
-  let ids = client.startConnect("wss://example.com/socket")
-  var completion: WebSocketResult
-  if client.waitForResult(completion) and completion.error.kind == teNone:
-    discard client.startSend(ids.connectionId,
-      WebSocketMessage(kind: wmText, data: "hello"))
-    discard client.waitForResult(completion)
-    var event: WebSocketEvent
-    if client.waitForEvent(ids.connectionId, event):
-      echo event.kind
+  socket.connect("wss://example.com/socket")
+  socket.send("hello")
+  echo socket.receive()
 finally:
-  client.close()
+  socket.close()
 ```
 
-Standalone local correctness checks (Node is development tooling only):
+For multiple connections or binary messages, use `WebSocketClient`. Both clients can
+run alongside HTTP. See [WebSockets](WEBSOCKETS.md) for limits, timeouts and lifecycle.
+
+Local WebSocket checks require Node.js and OpenSSL:
 ```sh
 sh tests/verify-websocket.sh
 ```
-
-These checks require Node.js and OpenSSL as development tooling, and a
-WebSocket-enabled libcurl 8.14+ with matching headers. The existing HTTP test suite
-continues to run independently with `nim test tests/ci.nims`. Linux is the verified
-WebSocket platform; see the contract for remaining validation limits.

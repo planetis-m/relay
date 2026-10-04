@@ -48,9 +48,33 @@ proc main() =
         client.send("echo")
         doAssert client.receive() == "echo"
         doAssertRaises TimeoutError: discard client.receive(timeoutMs = 30)
-        doAssertRaises IOError: client.send("closed")
+        client.send("alive")
+        doAssert client.receive() == "alive"
       finally:
         client.close()
+    elif mode == "text-failure":
+      let failed = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
+      try:
+        doAssertRaises IOError: failed.connect(url & "bad")
+        # Failed connect leaves the owner open for caller-managed cleanup.
+        doAssertRaises ValueError: failed.connect("http://example.com/")
+      finally:
+        failed.close()
+      let peer = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
+      try:
+        peer.connect(url & "close")
+        sleep(80)
+        doAssertRaises IOError: peer.send("hello")
+        try:
+          discard peer.receive()
+          doAssert false, "expected peer closure"
+        except IOError as error:
+          doAssert error.msg == "Peer closed the WebSocket connection"
+        when not defined(danger):
+          doAssertRaises AssertionDefect: peer.send("disconnected")
+        doAssertRaises ValueError: peer.connect("http://example.com/")
+      finally:
+        peer.close()
     elif mode.startsWith("tls"):
       let ids = service.startConnect(url)
       let response = service.resultFor(ids.operationId)
