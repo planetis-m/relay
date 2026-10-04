@@ -97,6 +97,7 @@ proc timeout(client: WebSocketClientObj; timeoutMs: int): int =
   if timeoutMs > 0: min(timeoutMs, cint.high.int) else: client.defaultTimeoutMs
 
 proc mailbox(client: WebSocketClientObj; id: ConnectionId): Mailbox =
+  result = nil
   for item in client.mailboxes:
     if item.id == id: return item
 
@@ -288,7 +289,7 @@ proc requestClose(client: WebSocketClientObj; conn: Connection) =
     conn.controls.addLast(("", CURLWS_CLOSE))
 
 proc processCommands(client: var WebSocketClientObj; connections: var seq[Connection]) =
-  var commands: Deque[Command]
+  var commands = Deque[Command]()
   acquire(client.lock)
   swap(commands, client.commands)
   release(client.lock)
@@ -340,8 +341,7 @@ proc upgrades(client: var WebSocketClientObj; connections: seq[Connection]) =
             client.completion(conn.connectCommand)
           break
 
-proc serviceConnection(client: var WebSocketClientObj; conn: Connection;
-    state: ClientState) =
+proc serviceConnection(client: var WebSocketClientObj; conn: Connection; state: ClientState) =
   acquire(client.lock)
   let canceled = conn.mailbox.cancelRequested
   let closing = conn.mailbox.closeRequested
@@ -563,6 +563,7 @@ proc closeConnection*(client: WebSocketClient; id: ConnectionId) =
   release(client.lock)
 
 proc retrieveResult(client: WebSocketClient; item: var WebSocketResult; blocking: bool): bool =
+  result = false
   let active = not client.closed
   if active: acquire(client.lock)
   while blocking and client.results.len == 0 and client.state != csStopped:
@@ -583,6 +584,7 @@ proc waitForResult*(client: WebSocketClient; item: var WebSocketResult): bool =
 
 proc retrieveEvent(client: WebSocketClient; id: ConnectionId; item: var WebSocketEvent;
     blocking: bool; timeoutMs: int): bool =
+  result = false
   let deadline = getMonoTime() + initDuration(milliseconds =
     client[].timeout(timeoutMs))
   let active = not client.closed

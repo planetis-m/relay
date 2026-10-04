@@ -9,12 +9,14 @@ proc emptyHttpHeaders*(): HttpHeaders =
 
 proc contains*(headers: HttpHeaders; key: string): bool =
   ## Checks if there is at least one header for the key. Not case sensitive.
+  result = false
   for (k, _) in headers.items:
     if cmpIgnoreCase(k, key) == 0:
       return true
 
 proc `[]`*(headers: HttpHeaders; key: string): string =
   ## Returns the first header value for the key. Not case sensitive.
+  result = ""
   for (k, v) in headers.items:
     if cmpIgnoreCase(k, key) == 0:
       return v

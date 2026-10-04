@@ -99,6 +99,7 @@ proc stopStallServer(server: StallServer) =
   deinitLock(server.lock)
 
 proc waitForQueuedState(client: HttpClient; minQueueLen: int; timeoutMs: int): bool =
+  result = false
   var waitedMs = 0
   while waitedMs <= timeoutMs:
     if client.numInFlight() == 1 and client.queueLen() >= minQueueLen:
@@ -127,7 +128,7 @@ proc testClearQueueCancelsQueuedRequests() =
         "relay did not enter expected queue state"
       client.clearQueue()
 
-      var seenRequestIds: seq[int64]
+      var seenRequestIds: seq[int64] = @[]
       var canceledCount = 0
       var timeoutCount = 0
       for _ in 0..<pending:

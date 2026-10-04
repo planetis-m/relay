@@ -4,11 +4,13 @@ import relay/http
 import relay/websocket
 
 proc resultFor(service: WebSocketClient; operation: OperationId): WebSocketResult =
+  result = WebSocketResult()
   doAssert service.waitForResult(result)
   doAssert result.operationId == operation
 
-proc eventFor(service: WebSocketClient; id: ConnectionId): WebSocketEvent =
-  doAssert service.waitForEvent(id, result, 1500)
+proc eventFor(service: WebSocketClient; id: ConnectionId; timeoutMs = 1500): WebSocketEvent =
+  result = WebSocketEvent()
+  doAssert service.waitForEvent(id, result, timeoutMs)
 
 proc opened(service: WebSocketClient; url: string): ConnectionId =
   let ids = service.startConnect(url)
@@ -150,7 +152,9 @@ proc main() =
       if mode == "duplex":
         doAssert service.eventFor(id).message.data == repeat('i', 200_000)
       doAssert service.resultFor(operation).error.kind == teNone
-      doAssert service.eventFor(id).message.data == data
+      # Allow the 4 MiB echo time to arrive on slower CI runners.
+      let timeoutMs = if mode == "partial": 3500 else: 1500
+      doAssert service.eventFor(id, timeoutMs).message.data == data
     elif mode == "idle-close":
       let id = service.opened(url & "no-close")
       let started = getMonoTime()

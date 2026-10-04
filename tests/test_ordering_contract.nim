@@ -120,7 +120,7 @@ proc testUrl(server: TestServer): string =
   "http://127.0.0.1:" & $int(server.port) & "/ok"
 
 proc verifyContains(batchResults: RequestResults; expectedRequestIds: seq[int64]) =
-  var gotRequestIds: seq[int64]
+  var gotRequestIds: seq[int64] = @[]
   var wantRequestIds = expectedRequestIds
   doAssert batchResults.len == expectedRequestIds.len
   for item in batchResults:
@@ -151,7 +151,7 @@ proc main =
       let pending = asyncBatch.len
       client.startRequests(asyncBatch)
 
-      var asyncResults: RequestResults
+      var asyncResults: RequestResults = @[]
       for _ in 0..<pending:
         var item: RequestResult
         doAssert client.waitForResult(item)
