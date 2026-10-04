@@ -110,6 +110,21 @@ proc main() =
       let id = service.opened(url)
       doAssert service.resultFor(service.text(id, "healthy")).error.kind == teNone
       doAssert service.eventFor(id).message.data == "healthy"
+    elif mode in ["disconnect", "disconnect-send"]:
+      let id = service.opened(url & mode)
+      if mode == "disconnect-send":
+        let operation = service.startSend(id, WebSocketMessage(kind: wmBinary,
+          data: repeat('x', 32 * 1024 * 1024)))
+        let completion = service.resultFor(operation)
+        doAssert completion.error.kind == teNetwork and completion.error.curlCode > 0
+        doAssert completion.error.kind.isRetryable()
+      let terminal = service.eventFor(id)
+      doAssert terminal.kind == weClosed
+      doAssert terminal.error.kind == teNetwork and terminal.error.curlCode > 0
+      doAssert terminal.error.kind.isRetryable()
+      let healthy = service.opened(url)
+      doAssert service.resultFor(service.text(healthy, "healthy")).error.kind == teNone
+      doAssert service.eventFor(healthy).message.data == "healthy"
     elif mode in ["pressure", "bytes"]:
       let slow = service.opened(url & "flood")
       let fast = service.opened(url)
@@ -120,6 +135,7 @@ proc main() =
       let terminal = service.eventFor(slow)
       doAssert terminal.kind == weClosed
       doAssert terminal.error.message.contains("overflow")
+      doAssert terminal.error.kind == teProtocol and terminal.error.curlCode == 0
       let a = service.text(fast, "a")
       let b = service.text(fast, "b")
       doAssertRaises IOError: discard service.text(fast, "over capacity")

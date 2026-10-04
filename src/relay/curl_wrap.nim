@@ -206,22 +206,17 @@ proc activeSocket*(easy: Easy): SocketHandle =
   easy.getInfo(CURLINFO_ACTIVESOCKET, result)
 
 proc recvFrame*(easy: Easy; buffer: pointer; size: csize_t;
-    received: var csize_t; frame: var tuple[flags: cuint, bytesLeft: curl_off_t]): bool =
-  ## False when receiving would block. Copy metadata before another curl call.
+    received: var csize_t; frame: var tuple[flags: cuint, bytesLeft: curl_off_t]): CURLcode =
+  ## Return curl's status. Copy metadata on success before another curl call.
   var meta: ptr curl_ws_frame
-  let code = curl_ws_recv(easy.raw, buffer, size, addr received, addr meta)
-  if code != CURLE_AGAIN:
-    check(code, "WebSocket receive failed")
+  result = curl_ws_recv(easy.raw, buffer, size, addr received, addr meta)
+  if result == CURLE_OK:
     frame = (meta.flags.cuint, meta.bytesleft)
-    result = true
 
 proc sendFrame*(easy: Easy; buffer: pointer; size: csize_t;
-    sent: var csize_t; frameSize: curl_off_t; flags: cuint): bool =
-  ## False when sending would block; sent still reports any accepted bytes.
-  let code = curl_ws_send(easy.raw, buffer, size, addr sent, frameSize, flags)
-  if code != CURLE_AGAIN:
-    check(code, "WebSocket send failed")
-    result = true
+    sent: var csize_t; frameSize: curl_off_t; flags: cuint): CURLcode =
+  ## Return curl's status; sent reports any accepted bytes, including on CURLE_AGAIN.
+  curl_ws_send(easy.raw, buffer, size, addr sent, frameSize, flags)
 
 proc addHeader*(list: var Slist; headerLine: string) =
   let added = curl_slist_append(list.raw, headerLine.cstring)

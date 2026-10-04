@@ -31,6 +31,14 @@ async function fixture(tls) {
       .digest('base64');
     socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n' +
       `Connection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+    if (req.url.endsWith('disconnect-send')) {
+      socket.once('data', () => socket.destroy());
+      return;
+    }
+    if (req.url.endsWith('disconnect')) {
+      timers.push(setTimeout(() => socket.destroy(), 50));
+      return;
+    }
     if (req.url.endsWith('pause')) { socket.pause(); return; }
     if (req.url.endsWith('partial')) {
       socket.pause();
@@ -99,7 +107,8 @@ function execute(url, mode, ca = '') {
 }
 for (const mode of ['http-first', 'socket-first', 'text-client', 'text-failure', 'idle', 'pressure', 'cancel-connect',
   'cancel-send', 'queued-deadline', 'cancel-receive', 'failure', 'shutdown-full',
-  'bytes', 'duplex', 'partial', 'idle-close', 'abort-full', 'shutdown-scope', 'slow-peer']) {
+  'bytes', 'duplex', 'partial', 'idle-close', 'abort-full', 'shutdown-scope', 'slow-peer',
+  'disconnect', 'disconnect-send']) {
   test(`separate WebSocket worker: ${mode}`, async () => {
     const server = await fixture();
     try {
