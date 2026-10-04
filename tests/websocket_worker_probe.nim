@@ -15,7 +15,7 @@ proc opened(service: WebSocketClient; url: string): ConnectionId =
   doAssert service.resultFor(ids.operationId).error.kind == teNone
   result = ids.connectionId
 
-proc text(service: WebSocketClient; id: ConnectionId; data: string): OperationId =
+proc text(service: WebSocketClient; id: ConnectionId; data: sink string): OperationId =
   service.startSend(id, WebSocketMessage(kind: wmText, data: data))
 
 type Waiter = object
@@ -52,6 +52,14 @@ proc main() =
         doAssertRaises TimeoutError: discard client.receive(timeoutMs = 30)
         client.send("alive")
         doAssert client.receive() == "alive"
+        var retained = "owned"
+        client.send(retained)
+        retained[0] = 'X'
+        doAssert client.receive() == "owned"
+        var transferred = "moved"
+        client.send(move transferred)
+        doAssert transferred.len == 0
+        doAssert client.receive() == "moved"
       finally:
         client.close()
     elif mode == "text-failure":
