@@ -1,7 +1,7 @@
 # relay
 
 Relay provides HTTP and persistent WebSocket clients over libcurl. `HttpClient` handles
-batches and single requests with bounded parallelism; `WebSocketService` multiplexes
+batches and single requests with bounded parallelism; `WebSocketClient` multiplexes
 persistent connections, and `WebSocket` provides a synchronous text interface.
 
 It gives you:
@@ -88,13 +88,13 @@ HTTP APIs are exported from `src/relay.nim`; WebSocket APIs from `relay/websocke
 | Owner | Constructor | Purpose |
 | --- | --- | --- |
 | `HttpClient` | `newHttpClient` | HTTP request worker and batch/single-request helpers |
-| `WebSocketService` | `newWebSocketService` | One worker for multiple persistent WebSocket connections |
+| `WebSocketClient` | `newWebSocketClient` | One worker for multiple persistent WebSocket connections |
 | `WebSocket` | `newWebSocket` | Synchronous text interface for one WebSocket connection |
 
 `Relay` and `newRelay` remain HTTP compatibility aliases. Existing request/result
 names and HTTP verb helpers retain their contracts. `connect` on `HttpClient`
 issues HTTP CONNECT; `connect` on `WebSocket` opens a persistent connection.
-`startConnect` and `startSend` submit operations to `WebSocketService`.
+`startConnect` and `startSend` submit operations to `WebSocketClient`.
 
 ### Core Types
 
@@ -291,7 +291,7 @@ message kinds, bounded queues, deadlines, cancellation and lifecycle.
 ```nim
 import relay/websocket
 
-let client = newWebSocketService()
+let client = newWebSocketClient()
 try:
   let ids = client.startConnect("wss://example.com/socket")
   var completion: WebSocketResult

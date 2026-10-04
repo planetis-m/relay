@@ -1,7 +1,7 @@
 # Persistent WebSockets
 
 `relay/websocket` transports messages without JSON or application callbacks. One
-`WebSocketService` owns one worker for multiple connections; HTTP retains its separate
+`WebSocketClient` owns one worker for multiple connections; HTTP retains its separate
 worker. Build with `--threads:on --mm:atomicArc` and a WebSocket-enabled libcurl 8.14+
 with matching development headers. Linux/libcurl 8.18.0 is verified.
 
@@ -9,7 +9,7 @@ with matching development headers. Linux/libcurl 8.18.0 is verified.
 
 | API | Contract |
 | --- | --- |
-| `newWebSocketService(maxConnections = 16, maxCommands = 64, maxEvents = 64, defaultTimeoutMs = 60_000, maxMessageBytes = 32 * 1024 * 1024, maxQueuedBytes = 32 * 1024 * 1024, closeTimeoutMs = 100, bypassProxy = false, proxy = "", caInfo = "")` | Starts one worker; nonpositive bounds clamp to one |
+| `newWebSocketClient(maxConnections = 16, maxCommands = 64, maxEvents = 64, defaultTimeoutMs = 60_000, maxMessageBytes = 32 * 1024 * 1024, maxQueuedBytes = 32 * 1024 * 1024, closeTimeoutMs = 100, bypassProxy = false, proxy = "", caInfo = "")` | Starts one worker; nonpositive bounds clamp to one |
 | `startConnect(url: sink string, timeoutMs = 0)` | Returns distinct connection and operation IDs |
 | `startSend(id, message: sink WebSocketMessage, timeoutMs = 0)` | Returns an operation ID; use after successful connect completion |
 | `waitForResult(item: var WebSocketResult)` / `pollForResult(item)` | Completion order, correlated by operation ID; false after worker stops and results drain |
