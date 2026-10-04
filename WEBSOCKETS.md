@@ -18,12 +18,12 @@ proc receive*(client: WebSocket; timeoutMs = 0): string
 proc close*(client: WebSocket)
 ```
 
-Invalid URLs, text, size or repeated connect raise `ValueError` and leave the
+Invalid URLs, text or size raise `ValueError` and leave the
 connection usable. Transport/protocol failures raise `IOError`; deadline expiry raises
 `TimeoutError`, an `IOError`. Errors propagate without joining the worker: call `close`
 in `finally`. A receive timeout leaves the connection open. Use one caller per `WebSocket`.
-Connect requires an open client; send/receive require a connected client. These are
-asserted preconditions; assertions are disabled in danger builds.
+Connect requires an open, disconnected client; send/receive require a connected client.
+These are asserted preconditions; assertions are disabled in danger builds.
 
 ## Connection worker
 
@@ -50,6 +50,8 @@ proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
 Each accepted operation completes once. Check `error.kind == teNone` for success;
 peer/local close reports `teCanceled`. Use one result consumer and one event consumer
 per connection. Submission and retrieval are synchronized while the worker is active.
+Submission, cancellation and connection close require an open client. All receivers
+must be non-nil except for `close` and `abort`. Preconditions may be asserted.
 Retrieval returns false when no item is available after shutdown; an empty poll also
 returns false. Event waits return false on timeout or unknown/drained IDs.
 

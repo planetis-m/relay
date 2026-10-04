@@ -1,6 +1,7 @@
 ## Blocking text WebSockets and a worker for multiple text/binary connections.
 ## Requires --threads:on --mm:atomicArc and WebSocket-enabled libcurl 8.14+.
 ## Call close or abort before releasing an owner; shutdown belongs to its creating thread.
+## Submission and connection control require an open client; retrieval works after shutdown.
 import std/[base64, deques, locks, monotimes, sha1, strutils, sysrand, times, unicode, uri]
 import ./[curl_wrap, transport_errors]
 import ./bindings/curl
@@ -488,7 +489,7 @@ proc validateUrl(url: string) =
 
 proc checkAdmission(client: WebSocketClient) =
   if client.state != csRunning:
-    raise newException(IOError, "WebSocket client is closed")
+    raise newException(IOError, "WebSocket worker stopped")
   if client.outstanding >= client.maxCommands:
     raise newException(IOError, "WebSocket command queue is full")
   if client.nextOperation == int64.high:
@@ -497,9 +498,8 @@ proc checkAdmission(client: WebSocketClient) =
 proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
     tuple[connectionId: ConnectionId, operationId: OperationId] =
   ## Submit a connection attempt; correlate its completion by operationId.
+  assert not client.closed, "WebSocket client is closed"
   validateUrl(url)
-  if client.closed:
-    raise newException(IOError, "WebSocket client is closed")
   acquire(client.lock)
   try:
     client.checkAdmission()
@@ -522,11 +522,10 @@ proc startSend*(client: WebSocketClient; id: ConnectionId;
     message: sink WebSocketMessage; timeoutMs = 0): OperationId =
   ## Submit text or binary data after successful connect completion.
   ## Invalid text/size raises ValueError; refused admission raises IOError.
+  assert not client.closed, "WebSocket client is closed"
   if message.data.len > client.maxMessageBytes or
       (message.kind == wmText and message.data.validateUtf8() >= 0):
     raise newException(ValueError, "Invalid WebSocket text or message size")
-  if client.closed:
-    raise newException(IOError, "WebSocket client is closed")
   acquire(client.lock)
   try:
     client.checkAdmission()
@@ -545,7 +544,7 @@ proc startSend*(client: WebSocketClient; id: ConnectionId;
 
 proc cancel*(client: WebSocketClient; id: ConnectionId) =
   ## Out-of-band cancellation works even when the command queue is full.
-  if client.closed: return
+  assert not client.closed, "WebSocket client is closed"
   acquire(client.lock)
   let box = client[].mailbox(id)
   if box != nil: box.cancelRequested = true
@@ -554,7 +553,7 @@ proc cancel*(client: WebSocketClient; id: ConnectionId) =
 
 proc closeConnection*(client: WebSocketClient; id: ConnectionId) =
   ## Request a bounded close handshake for one connection without waiting.
-  if client.closed: return
+  assert not client.closed, "WebSocket client is closed"
   acquire(client.lock)
   let box = client[].mailbox(id)
   if box != nil: box.closeRequested = true
@@ -632,29 +631,27 @@ proc close*(client: WebSocket) =
     client.service.close()
 
 proc connect*(client: WebSocket; url: string; timeoutMs = 0) =
-  ## Open a ws/wss connection and propagate connection errors.
+  ## Open a ws/wss connection. Requires an open, disconnected client.
   assert not client.closed, "WebSocket client is closed"
-  if client.connected: raise newException(ValueError, "WebSocket client is already connected")
+  assert not client.connected, "WebSocket client is already connected"
   let ids = client.service.startConnect(url, timeoutMs)
   client.id = ids.connectionId
   var completion: WebSocketResult
-  if not client.service.waitForResult(completion):
-    raise newException(IOError, "WebSocket worker stopped")
+  discard client.service.waitForResult(completion)
   raiseTransport(completion.error)
   client.connected = true
 
 proc send*(client: WebSocket; text: string; timeoutMs = 0) =
-  ## Send UTF-8 text and wait for completion.
+  ## Send UTF-8 text and wait for completion. Requires a connected client.
   assert client.connected, "WebSocket client is not connected"
   discard client.service.startSend(client.id,
     WebSocketMessage(kind: wmText, data: text), timeoutMs)
   var completion: WebSocketResult
-  if not client.service.waitForResult(completion):
-    raise newException(IOError, "WebSocket worker stopped")
+  discard client.service.waitForResult(completion)
   raiseTransport(completion.error)
 
 proc receive*(client: WebSocket; timeoutMs = 0): string =
-  ## Wait for UTF-8 text; timeout leaves the connection open.
+  ## Wait for UTF-8 text. Requires a connected client; timeout leaves it open.
   assert client.connected, "WebSocket client is not connected"
   var event: WebSocketEvent
   if not client.service.waitForEvent(client.id, event, timeoutMs):

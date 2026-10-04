@@ -49,7 +49,8 @@ block serviceOwnership:
   alias.abort()
   client.close()
   doAssert not client.waitForResult(item)
-  doAssertRaises IOError: discard client.startConnect("ws://127.0.0.1:1/")
+  when not defined(danger):
+    doAssertRaises AssertionDefect: discard client.startConnect("ws://127.0.0.1:1/")
   close(WebSocketClient(nil))
   abort(WebSocketClient(nil))
 
