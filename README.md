@@ -93,7 +93,7 @@ Persistent connection APIs live in `relay/websocket`.
 | `WebSocket` | `newWebSocket` | Synchronous text interface for one WebSocket connection |
 
 `connect` on `HttpClient` issues HTTP CONNECT; on `WebSocket` it opens a persistent
-connection. See [WebSockets](WEBSOCKETS.md) for the worker API.
+connection. See [WebSockets](docs/WEBSOCKETS.md) for the worker API.
 
 ### Modules
 
@@ -312,7 +312,7 @@ finally:
 ```
 
 For multiple connections or binary messages, use `WebSocketClient`. Both clients can
-run alongside HTTP. See [WebSockets](WEBSOCKETS.md) for limits, timeouts and lifecycle.
+run alongside HTTP. See [WebSockets](docs/WEBSOCKETS.md) for limits, timeouts and lifecycle.
 
 Local WebSocket checks require Node.js and OpenSSL:
 ```sh

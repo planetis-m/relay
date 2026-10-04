@@ -4,6 +4,7 @@
 - `src/`: Core Relay library modules.
 - `tests/`: Executable test programs plus `tests/ci.nims` test task.
 - `examples/`: Small runnable usage examples.
+- `docs/`: WebSocket API contract and usage notes.
 - Root files:
   - `relay.nimble`: package metadata and test task.
   - `README.md`: API and usage docs.

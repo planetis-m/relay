@@ -2,7 +2,7 @@
 
 Import `relay/websocket`. Use `WebSocket` for blocking text messages or
 `WebSocketClient` for multiple connections with text and binary messages.
-Both can run alongside `HttpClient`. See the [README example](README.md#persistent-websockets).
+Both can run alongside `HttpClient`. See the [README example](../README.md#persistent-websockets).
 
 Build with `--threads:on --mm:atomicArc` and a thread-safe, WebSocket-enabled
 libcurl 8.14+ with matching headers.
