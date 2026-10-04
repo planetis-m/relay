@@ -101,61 +101,18 @@ proc `=destroy`(client: HttpClientObj) =
   `=destroy`(owner.inFlight)
   `=destroy`(owner.readyResults)
 
-proc isRetryable*(kind: TransportErrorKind): bool {.inline.} =
-  ## Returns true for timeouts, network, DNS, TLS, and internal errors.
-  case kind
-  of teTimeout, teNetwork, teDns, teTls, teInternal:
-    result = true
-  of teNone, teCanceled, teProtocol:
-    result = false
-
-proc noTransportError(): TransportError {.inline.} =
-  TransportError(kind: teNone, message: "", curlCode: 0)
-
-proc newTransportError(kind: TransportErrorKind; message: sink string;
-    curlCode = 0): TransportError {.inline.} =
-  TransportError(kind: kind, message: message, curlCode: curlCode)
-
-proc classifyTransportError(curlCode: CURLcode): TransportErrorKind {.inline.} =
-  case curlCode
-  of CURLE_OPERATION_TIMEDOUT:
-    teTimeout
-  of CURLE_COULDNT_RESOLVE_PROXY, CURLE_COULDNT_RESOLVE_HOST:
-    teDns
-  of CURLE_SSL_CONNECT_ERROR, CURLE_PEER_FAILED_VERIFICATION:
-    teTls
-  of CURLE_ABORTED_BY_CALLBACK:
-    teCanceled
-  else:
-    teNetwork
-
-proc bodyWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
+proc appendWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
   let total = int(size * nitems)
   if total <= 0:
     result = 0
   else:
-    let body = cast[ptr string](userdata)
-    if body.isNil:
+    let destination = cast[ptr string](userdata)
+    if destination.isNil:
       result = csize_t(total)
     else:
-      let start = body[].len
-      body[].setLen(start + total)
-      copyMem(addr body[][start], buffer, total)
-      result = csize_t(total)
-
-proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
-    userdata: pointer): csize_t {.cdecl.} =
-  let total = int(size * nitems)
-  if total <= 0:
-    result = 0
-  else:
-    let headers = cast[ptr string](userdata)
-    if headers.isNil:
-      result = csize_t(total)
-    else:
-      let start = headers[].len
-      headers[].setLen(start + total)
-      copyMem(addr headers[][start], buffer, total)
+      let start = destination[].len
+      destination[].setLen(start + total)
+      copyMem(addr destination[][start], buffer, total)
       result = csize_t(total)
 
 proc newResponse(request: RequestWrap): Response {.inline.} =
@@ -191,8 +148,8 @@ proc configureEasy(client: ptr HttpClientObj; request: RequestWrap; easy: var Ea
   request.curlHeaders = headerList
   easy.setHeaders(request.curlHeaders)
 
-  easy.setWriteCallback(bodyWriteCb, cast[pointer](addr request.responseBody))
-  easy.setHeaderCallback(headerWriteCb, cast[pointer](addr request.responseHeadersRaw))
+  easy.setWriteCallback(appendWriteCb, cast[pointer](addr request.responseBody))
+  easy.setHeaderCallback(appendWriteCb, cast[pointer](addr request.responseHeadersRaw))
   easy.setTimeoutMs(if request.timeoutMs > 0: request.timeoutMs else: client.defaultTimeoutMs)
   easy.setConnectTimeoutMs(DefaultConnectTimeoutMs)
   easy.setSslVerify(true, true)

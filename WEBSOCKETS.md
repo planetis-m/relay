@@ -88,7 +88,8 @@ explicitly. Ping payloads are echoed even while callers are idle. Close payload 
 code and reason UTF-8 are validated. Libcurl owns masking and wire framing.
 
 HTTP and WebSockets share curl wrappers, synchronized counted global init/cleanup,
-transport errors/classification and the wrapper wakeup primitive. Easy's move hook
+transport error construction/classification/retry predicates and the wrapper wakeup primitive.
+Curl easy/multi status checks are defined once in `curl_wrap` and used by both workers. Easy's move hook
 clears moved-from storage before moving its error buffer; failed slist append preserves
 the prior owner. HTTP uses `HttpClient`/`newHttpClient`; `Relay`/`newRelay` remain compatibility aliases.
 HTTP public request APIs/defaults remain compatible. HTTP's queues

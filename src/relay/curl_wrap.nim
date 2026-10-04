@@ -1,6 +1,5 @@
 import std/locks
 import ./bindings/curl
-from ./bindings/websockets import curl_multi_wakeup
 
 export CurlMsgType, CURLMsg
 
@@ -62,11 +61,13 @@ proc `=sink`*(dest: var Slist; src: Slist) =
   `=wasMoved`(dest)
   dest.raw = src.raw
 
-proc checkCurl(code: CURLcode; context: string) {.noinline.} =
+proc checkCurl*(code: CURLcode; context: string) {.noinline.} =
+  ## Raise IOError with curl diagnostic text for a failed easy operation.
   if code != CURLE_OK:
     raise newException(IOError, context & ": " & $curl_easy_strerror(code))
 
-proc checkMulti(code: CURLMcode; context: string) {.noinline.} =
+proc checkMulti*(code: CURLMcode; context: string) {.noinline.} =
+  ## Raise IOError with curl diagnostic text for a failed multi operation.
   if code != CURLM_OK:
     raise newException(IOError, context & ": " & $curl_multi_strerror(code))
 
@@ -231,6 +232,10 @@ proc handleKey*(easy: Easy): pointer =
 proc handleKey*(msg: CURLMsg): pointer =
   msg.easy_handle
 
-proc wakeup*(multi: Multi) {.raises: [].} =
-  if multi.raw != nil:
-    discard curl_multi_wakeup(multi.raw)
+proc wakeup*(multi: CURLM) {.raises: [].} =
+  ## Best-effort cross-thread wakeup while the caller keeps the handle alive.
+  if multi != nil:
+    discard curl_multi_wakeup(multi)
+
+proc wakeup*(multi: Multi) {.inline, raises: [].} =
+  multi.raw.wakeup()

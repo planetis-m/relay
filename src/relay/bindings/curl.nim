@@ -110,6 +110,7 @@ proc curl_multi_perform*(multiHandle: CURLM; runningHandles: ptr cint): CURLMcod
 proc curl_multi_poll*(multiHandle: CURLM; extraFds: pointer; extraNfds: cuint;
     timeoutMs: cint; numfds: ptr cint): CURLMcode
 proc curl_multi_info_read*(multiHandle: CURLM; msgsInQueue: ptr cint): ptr CURLMsg
+proc curl_multi_wakeup*(multiHandle: CURLM): CURLMcode
 proc curl_multi_cleanup*(multiHandle: CURLM): CURLMcode
 proc curl_multi_strerror*(code: CURLMcode): cstring
 
