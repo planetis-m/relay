@@ -71,8 +71,8 @@ returns false. Event waits return false on timeout or unknown/drained IDs.
   Connect/send deadlines include queue time; an expired send closes its connection.
 - An event-wait timeout returns false and leaves the worker connection open.
   Blocking `WebSocket.receive` raises `TimeoutError` and leaves the connection open.
-- Submission takes sink arguments: pass `move(message)` or `move(text)` to transfer
-  a disposable payload; arguments used again are copied for the queue.
+- Pass payloads normally to sink parameters. Nim moves them when it can prove last use;
+  otherwise it copies them.
 - Always call `close` or `abort` before releasing the final owner, using `try/finally`.
   Shutdown belongs to the creating thread after other callers finish. Repeated calls
   are safe; destruction does not stop workers. Drain retained worker results/events

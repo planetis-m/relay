@@ -271,9 +271,9 @@ proc writeFrames(client: var WebSocketClientObj; conn: Connection) =
       conn.offset = 0
       conn.flags.excl(cfFrameStarted)
   if cfFrameStarted notin conn.flags and conn.controls.len > 0:
-    let flags = conn.controls.peekFirst().flags
-    if conn.writeFrame(conn.controls.peekFirst().data, flags, conn.controlOffset):
-      if flags == CURLWS_CLOSE: conn.flags.incl(cfCloseSent)
+    let control {.cursor.} = conn.controls.peekFirst()
+    if conn.writeFrame(control.data, control.flags, conn.controlOffset):
+      if control.flags == CURLWS_CLOSE: conn.flags.incl(cfCloseSent)
       discard conn.controls.popFirst()
       conn.controlOffset = 0
 
