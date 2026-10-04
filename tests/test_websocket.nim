@@ -60,11 +60,20 @@ block disconnected:
     when not defined(danger):
       doAssertRaises AssertionDefect: client.send("hello")
       doAssertRaises AssertionDefect: discard client.receive()
-    for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
-        "ws://localhost/#fragment", "ws://localhost/\n", "ws://localhost/\0hidden"]:
-      doAssertRaises ValueError: client.connect(url)
+    when not defined(danger):
+      for url in ["ws://localhost/#fragment", "ws://localhost/\0hidden"]:
+        doAssertRaises AssertionDefect: client.connect(url)
   finally:
     client.close()
+
+block urlErrors:
+  for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
+      "ws://localhost/\n"]:
+    let client = newWebSocket()
+    try:
+      doAssertRaises IOError: client.connect(url)
+    finally:
+      client.close()
 
 block sharedClose:
   let client = newWebSocket(defaultTimeoutMs = 0, maxMessageBytes = 0)

@@ -2,7 +2,7 @@
 ## Requires --threads:on --mm:atomicArc and WebSocket-enabled libcurl 8.14+.
 ## Call close or abort before releasing an owner; shutdown belongs to its creating thread.
 ## Submission and connection control require an open client; retrieval works after shutdown.
-import std/[base64, deques, locks, monotimes, sha1, strutils, sysrand, times, unicode, uri]
+import std/[base64, deques, locks, monotimes, sha1, strutils, sysrand, times, unicode]
 import ./[curl_wrap, transport_errors]
 import ./bindings/curl
 export transport_errors
@@ -156,6 +156,8 @@ proc configure(client: var WebSocketClientObj; conn: Connection) =
     encode(Sha1Digest(secureHash(key & "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))))
   conn.headers.addHeader("Sec-WebSocket-Key: " & key)
   conn.easy.setUrl(conn.connectCommand.url)
+  conn.easy.setOpt(CURLOPT_PROTOCOLS_STR, "ws,wss".cstring)
+  conn.easy.setOpt(CURLOPT_DISALLOW_USERNAME_IN_URL, 1.clong)
   conn.easy.setHeaders(conn.headers)
   conn.easy.setHeaderCallback(headerCb, addr conn.handshake)
   conn.easy.setTimeoutMs(duration)
@@ -480,65 +482,58 @@ proc abort*(client: WebSocketClient) =
   ## Cancel all work and join. Does not wait for peers or consumer queue space.
   if client != nil: client[].stop(true)
 
-proc validateUrl(url: string) =
-  let u = parseUri(url)
-  if u.scheme notin ["ws", "wss"] or u.hostname.len == 0 or
-      u.username.len > 0 or u.password.len > 0 or u.anchor.len > 0 or
-      url.find({'\0'..' ', '\x7f'}) >= 0:
-    raise newException(ValueError, "Invalid WebSocket URL")
-
-proc checkAdmission(client: WebSocketClient) =
+proc enqueue(client: var WebSocketClientObj; command: sink Command):
+    tuple[connectionId: ConnectionId, operationId: OperationId] =
+  # Caller holds client.lock.
   if client.state != csRunning:
     raise newException(IOError, "WebSocket worker stopped")
   if client.outstanding >= client.maxCommands:
     raise newException(IOError, "WebSocket command queue is full")
-  if client.nextOperation == int64.high:
-    raise newException(IOError, "WebSocket operation IDs exhausted")
+  var cmd = command
+  case cmd.kind
+  of wcConnect:
+    if client.mailboxes.len >= client.maxConnections:
+      raise newException(IOError, "WebSocket connection limit reached; drain terminal events")
+    inc client.nextConnection
+    cmd.connectionId = ConnectionId(client.nextConnection)
+    client.mailboxes.add(Mailbox(id: cmd.connectionId))
+  of wcSend:
+    let box = client.mailbox(cmd.connectionId)
+    if box == nil or box.terminal or box.cancelRequested or box.closeRequested:
+      raise newException(IOError, "WebSocket connection unavailable")
+  inc client.nextOperation
+  inc client.outstanding
+  cmd.operationId = OperationId(client.nextOperation)
+  result = (cmd.connectionId, cmd.operationId)
+  client.commands.addLast(cmd)
+  client.multi.wakeup()
 
 proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
     tuple[connectionId: ConnectionId, operationId: OperationId] =
   ## Submit a connection attempt; correlate its completion by operationId.
+  ## Requires a URL without NUL or fragments; curl reports URL errors in the completion.
   assert not client.closed, "WebSocket client is closed"
-  validateUrl(url)
+  assert url.find({'\0', '#'}) < 0, "WebSocket URL contains NUL or fragment"
   acquire(client.lock)
   try:
-    client.checkAdmission()
-    if client.mailboxes.len >= client.maxConnections or client.nextConnection == int64.high:
-      raise newException(IOError, "WebSocket connection limit reached; drain terminal events")
-    inc client.nextConnection
-    inc client.nextOperation
-    inc client.outstanding
-    result = (ConnectionId(client.nextConnection), OperationId(client.nextOperation))
-    client.mailboxes.add(Mailbox(id: result.connectionId))
-    client.commands.addLast(Command(kind: wcConnect, connectionId: result.connectionId,
-      operationId: result.operationId, url: url,
+    result = client[].enqueue(Command(kind: wcConnect, url: url,
       deadline: getMonoTime() + initDuration(milliseconds =
         client[].timeout(timeoutMs))))
-    client.multi.wakeup()
   finally:
     release(client.lock)
 
 proc startSend*(client: WebSocketClient; id: ConnectionId;
     message: sink WebSocketMessage; timeoutMs = 0): OperationId =
   ## Submit text or binary data after successful connect completion.
-  ## Invalid text/size raises ValueError; refused admission raises IOError.
+  ## Requires data within maxMessageBytes and UTF-8 for text; refused admission raises IOError.
   assert not client.closed, "WebSocket client is closed"
-  if message.data.len > client.maxMessageBytes or
-      (message.kind == wmText and message.data.validateUtf8() >= 0):
-    raise newException(ValueError, "Invalid WebSocket text or message size")
+  assert message.data.len <= client.maxMessageBytes, "WebSocket message exceeds byte limit"
+  assert message.kind != wmText or message.data.validateUtf8() < 0, "Invalid WebSocket UTF-8 text"
   acquire(client.lock)
   try:
-    client.checkAdmission()
-    let box = client[].mailbox(id)
-    if box == nil or box.terminal or box.cancelRequested or box.closeRequested:
-      raise newException(IOError, "WebSocket connection unavailable")
-    inc client.nextOperation
-    inc client.outstanding
-    result = OperationId(client.nextOperation)
-    client.commands.addLast(Command(kind: wcSend, connectionId: id, operationId: result,
+    result = client[].enqueue(Command(kind: wcSend, connectionId: id,
       message: message, deadline: getMonoTime() + initDuration(milliseconds =
-        client[].timeout(timeoutMs))))
-    client.multi.wakeup()
+        client[].timeout(timeoutMs)))).operationId
   finally:
     release(client.lock)
 
@@ -619,9 +614,10 @@ proc raiseTransport(error: TransportError) =
 proc newWebSocket*(defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     bypassProxy = false): WebSocket =
   ## Create a blocking text connection. Call close before releasing it.
-  WebSocket(service: newWebSocketClient(maxConnections = 1,
-    defaultTimeoutMs = defaultTimeoutMs, maxMessageBytes = maxMessageBytes,
-    bypassProxy = bypassProxy))
+  result = WebSocket(
+    service: newWebSocketClient(maxConnections = 1, defaultTimeoutMs = defaultTimeoutMs,
+      maxMessageBytes = maxMessageBytes, bypassProxy = bypassProxy)
+  )
 
 proc close*(client: WebSocket) =
   ## Close the connection and join its worker. Repeated calls are safe.
@@ -632,7 +628,7 @@ proc close*(client: WebSocket) =
 
 proc connect*(client: WebSocket; url: string; timeoutMs = 0) =
   ## Open a ws/wss connection. Requires an open, disconnected client.
-  assert not client.closed, "WebSocket client is closed"
+  ## Close the client after a failed connection attempt.
   assert not client.connected, "WebSocket client is already connected"
   let ids = client.service.startConnect(url, timeoutMs)
   client.id = ids.connectionId
