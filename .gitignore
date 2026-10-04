@@ -33,3 +33,7 @@
 /tests/test_query_params
 /tests/test_http_status
 /tests/test_retry
+
+/.nimcache/
+/tests/test_websocket
+/tests/websocket_worker_probe
