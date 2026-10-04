@@ -1,3 +1,4 @@
+import std/nativesockets
 import ./bindings/curl
 
 export CurlMsgType, CURLMsg
@@ -111,11 +112,16 @@ proc perform*(multi: var Multi): int =
   check(curl_multi_perform(multi.raw, addr running), "curl_multi_perform failed")
   result = int(running)
 
-proc poll*(multi: var Multi; timeoutMs: int): int =
+proc poll*(multi: var Multi; timeoutMs: int; extraFds: var openArray[curl_waitfd]): int =
   var numfds: cint
-  check(curl_multi_poll(multi.raw, nil, 0.cuint, timeoutMs.cint, addr numfds),
+  let extra = if extraFds.len == 0: nil else: addr extraFds[0]
+  check(curl_multi_poll(multi.raw, extra, extraFds.len.cuint, timeoutMs.cint, addr numfds),
     "curl_multi_poll failed")
   result = int(numfds)
+
+proc poll*(multi: var Multi; timeoutMs: int): int =
+  var extraFds: array[0, curl_waitfd]
+  multi.poll(timeoutMs, extraFds)
 
 proc tryInfoRead*(multi: var Multi; msg: var CURLMsg; msgsInQueue: var int): bool =
   var queue: cint
@@ -189,6 +195,28 @@ proc effectiveUrl*(easy: Easy): string =
   check(curl_easy_getinfo(easy.raw, CURLINFO_EFFECTIVE_URL, addr urlPtr),
     "CURLINFO_EFFECTIVE_URL failed")
   result = $urlPtr
+
+proc activeSocket*(easy: Easy): SocketHandle =
+  check(curl_easy_getinfo(easy.raw, CURLINFO_ACTIVESOCKET, addr result),
+    "CURLINFO_ACTIVESOCKET failed")
+
+proc recvFrame*(easy: Easy; buffer: pointer; size: csize_t;
+    received: var csize_t; frame: var tuple[flags: cuint, bytesLeft: curl_off_t]): bool =
+  ## False when receiving would block. Copy metadata before another curl call.
+  var meta: ptr curl_ws_frame
+  let code = curl_ws_recv(easy.raw, buffer, size, addr received, addr meta)
+  if code != CURLE_AGAIN:
+    check(code, "WebSocket receive failed")
+    frame = (meta.flags.cuint, meta.bytesleft)
+    result = true
+
+proc sendFrame*(easy: Easy; buffer: pointer; size: csize_t;
+    sent: var csize_t; frameSize: curl_off_t; flags: cuint): bool =
+  ## False when sending would block; sent still reports any accepted bytes.
+  let code = curl_ws_send(easy.raw, buffer, size, addr sent, frameSize, flags)
+  if code != CURLE_AGAIN:
+    check(code, "WebSocket send failed")
+    result = true
 
 proc addHeader*(list: var Slist; headerLine: string) =
   let added = curl_slist_append(list.raw, headerLine.cstring)

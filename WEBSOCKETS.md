@@ -27,12 +27,27 @@ bytes for binary). `WebSocketResult` has `connectionId`, `operationId` and Relay
 and protocol failures have an explicit error. Accepted operations complete exactly
 once; cancellation does not erase results. There are no retry/reconnect semantics.
 
-Submission/retrieval is synchronized. Use one result consumer and one event consumer
-per connection to preserve application ordering. Lifecycle calls must run on the
-creating thread, without concurrent lifecycle calls, matching HttpClient. Aliases share
-close state. Dropping the final owner aborts and joins before locks/queues are freed;
-worker threads borrow owner pointers and do not retain their own owner. Lifecycle
-objects use `byref` so destruction never copies synchronization primitives.
+Submission/retrieval is synchronized while the worker is active. Use one result
+consumer and one event consumer per connection to preserve application ordering.
+Lifecycle calls must run on the creating thread after other callers finish, matching
+HttpClient's explicit ownership contract. Aliases share close state. Call `close` or
+`abort` in `try/finally` before releasing the final owner; destruction does not stop
+workers. Worker threads borrow owner pointers and do not retain their own owner.
+After shutdown, drain retained WebSocket results/events on the creating thread.
+
+Both clients keep fields directly on their owner, with compiler-generated field
+cleanup. A private enum tracks the worker (running, stopping, aborting, stopped);
+an owner-only `closed` flag records joining and release of synchronization. There
+are no resource sets, custom client destructors or nested data objects. Ordinary
+mutable helpers borrow the object through `var`; pointers are used at thread entry.
+Both constructors initialize curl and create their `Multi` before starting the
+worker, and clean up partial initialization on failure. Explicit shutdown wakes and
+joins the worker before releasing curl handles, the curl initialization reference,
+and synchronization. HTTP clears its queues; WebSocket retains results/events and
+drains them without locks after shutdown.
+The WebSocket worker uses `Easy` frame operations from `curl_wrap`.
+Each worker connection has a connecting/open/closing/finished lifecycle enum.
+Independent attachment, close-handshake and partial-frame facts use a private flag set.
 
 The text-only `newWebSocket(defaultTimeoutMs = 60_000, maxMessageBytes = 32 * 1024 * 1024,
 bypassProxy = false)` convenience owner exposes blocking `connect`, `send`, `receive`
@@ -43,14 +58,19 @@ existing connection. This convenience API has one caller and is not reentrant.
 
 ## Ownership, limits and deadlines
 
-All easy/multi handles, headers, upgrade state, partial writes and reassembly buffers
-belong exclusively to the worker. The sole cross-thread curl call is the documented
-`curl_multi_wakeup` operation, under the owner lock while its handle remains alive.
+During worker execution, only the worker performs I/O and manages easy handles,
+headers, upgrade state, partial writes and reassembly buffers. The owner creates
+`Multi` before starting the worker and releases it after joining. The sole concurrent
+cross-thread curl call is the documented `curl_multi_wakeup` operation, under the
+owner lock while its handle remains alive.
 Commands and payloads transfer through locked queues with atomic ARC. No caller buffer
 is borrowed by the worker. Results/events transfer back through the same boundary.
 The worker never calls an application callback.
 
-`maxCommands` bounds queued commands + active operations + undrained results. Full
+`maxCommands` bounds queued commands + active operations + undrained results.
+The locked `outstanding` counter increases on admission and decreases only
+when the consumer retrieves a result. Completing an operation does not release its
+capacity until that result is consumed. Full
 admission raises `IOError` without accepting an operation. Payloads are bounded by
 `maxMessageBytes`, hence admitted command payload storage is at most their product.
 `maxConnections` includes terminal mailboxes until their terminal events are drained.
@@ -109,12 +129,13 @@ Declarations are verified against supported curl headers and C ABI probes.
 
 ## Verification and deliberate limits
 
-The standalone `tests/verify-websocket.sh` runs unit/ABI/ownership contracts and 18
+The standalone `tests/verify-websocket.sh` runs unit/ABI/ownership contracts and 19
 independent loopback worker groups in debug/release/danger. Fixtures cover two sockets
 plus HTTP, independent shutdown in both orders, idle ping/close, fragments/control
 traffic during sends, resumed writes, blocked-peer fairness, binary, payload mutation, count/byte queue
 pressure, queue-time deadlines, connect/send/receive cancellation, full-queue shutdown,
-failure recovery, aliases/final-owner destruction and trusted/untrusted/hostname WSS.
+failure recovery, aliases/explicit scope shutdown, synchronous text input errors/timeout
+and trusted/untrusted/hostname WSS.
 
 No compression, subprotocol negotiation, configurable request headers, authentication,
 reconnect, application callbacks, configurable close codes or initiated heartbeat API

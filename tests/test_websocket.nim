@@ -52,7 +52,6 @@ block serviceOwnership:
   doAssertRaises IOError: discard client.startConnect("ws://127.0.0.1:1/")
   close(WebSocketClient(nil))
   abort(WebSocketClient(nil))
-  discard newWebSocketClient()
 
 block disconnected:
   let client = newWebSocket()
@@ -75,9 +74,7 @@ block sharedClose:
   doAssertRaises IOError: discard alias.receive()
   close(WebSocket(nil))
 
-block dropOwner:
-  # Automatic destruction releases Easy before the matching global cleanup.
-  discard newWebSocket()
+block explicitClose:
   let client = newWebSocket()
   client.close()
 

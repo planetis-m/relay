@@ -1,4 +1,5 @@
 import relay/http
+import std/assertions
 
 const
   UnreachableA = "http://127.0.0.1:1"
@@ -49,8 +50,7 @@ proc main =
     client.startRequests(inFlightBatch)
     client.clearQueue()
 
-    var raisedBusy = false
-    try:
+    doAssertRaises IOError:
       discard client.makeRequest(RequestSpec(
         verb: hvGet,
         url: UnreachableB,
@@ -59,9 +59,6 @@ proc main =
         requestId: 302,
         timeoutMs: 200
       ))
-    except IOError:
-      raisedBusy = true
-    doAssert raisedBusy, "makeRequest should reject a non-idle client"
 
     for _ in 0..<pendingCount:
       var drained: RequestResult

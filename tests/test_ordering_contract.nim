@@ -19,7 +19,7 @@ proc teardownDispatcher() =
       poll(0)
       inc spins
     setGlobalDispatcher(nil)
-  except:
+  except Exception: # poll dispatches callbacks with the base Exception effect.
     discard
 
 proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
@@ -62,7 +62,7 @@ proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
 
   try:
     waitFor runServer()
-  except Exception:
+  except Exception: # waitFor exposes the base Exception effect.
     acquire(server.lock)
     server.startError = getCurrentExceptionMsg()
     if not server.ready:

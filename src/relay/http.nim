@@ -63,17 +63,16 @@ type
     easy: Easy
     curlHeaders: Slist
 
+  ClientState = enum
+    csRunning, csStopping, csAborting, csStopped
+
   HttpClientObj = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
     thread: Thread[ptr HttpClientObj] # break cycle
-    initialized, globalInitialized, threadStarted: bool
-    workerRunning: bool
-    closeRequested: bool
-    abortRequested: bool
-    closed: bool
-    maxInFlight: int
+    state: ClientState
+    closed: bool # Owner-only: worker joined and synchronization released.
     defaultTimeoutMs: int
     maxRedirects: int
     multi: Multi
@@ -83,21 +82,6 @@ type
     readyResults: Deque[RequestResult]
   HttpClient* = ref HttpClientObj
     ## HTTP request worker with shared lifetime and completion-order results.
-
-proc shutdown(client: ptr HttpClientObj; aborting: bool) {.raises: [].}
-
-proc `=destroy`(client: HttpClientObj) =
-  let owner = cast[ptr HttpClientObj](addr client)
-  if client.initialized:
-    owner.shutdown(true)
-    deinitCond(owner.resultCond)
-    deinitCond(owner.wakeCond)
-    deinitLock(owner.lock)
-  `=destroy`(owner.multi)
-  `=destroy`(owner.availableEasy)
-  `=destroy`(owner.queue)
-  `=destroy`(owner.inFlight)
-  `=destroy`(owner.readyResults)
 
 proc appendWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
   let total = int(size * nitems)
@@ -126,11 +110,11 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     )
   )
 
-proc storeCompletionLocked(client: ptr HttpClientObj; item: sink RequestResult) =
+proc storeCompletionLocked(client: var HttpClientObj; item: sink RequestResult) =
   client.readyResults.addLast(item)
   broadcast(client.resultCond)
 
-proc configureEasy(client: ptr HttpClientObj; request: RequestWrap; easy: var Easy) =
+proc configureEasy(client: HttpClientObj; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
   easy.setHttpVersion2Tls()
@@ -154,19 +138,15 @@ proc configureEasy(client: ptr HttpClientObj; request: RequestWrap; easy: var Ea
   easy.setAcceptEncoding("gzip, deflate")
   easy.setFollowRedirects(true, client.maxRedirects)
 
-proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
-    removeError: sink string): RequestResult =
+proc completionFromCurl(client: var HttpClientObj; request: RequestWrap;
+    curlCode: CURLcode): RequestResult =
   result.response = newResponse(request)
-  if removeError.len > 0:
-    result.error = newTransportError(teInternal, removeError)
-  elif curlCode != CURLE_OK:
-    result.error = newTransportError(
-      classifyTransportError(curlCode),
-      "curl transfer failed code=" & $int(curlCode),
-      int(curlCode)
-    )
-  else:
-    try:
+  try:
+    client.multi.removeHandle(request.easy)
+    if curlCode != CURLE_OK:
+      result.error = newTransportError(classifyTransportError(curlCode),
+        "curl transfer failed code=" & $int(curlCode), int(curlCode))
+    else:
       result.response.code = HttpCode(request.easy.responseCode())
       let effective = request.easy.effectiveUrl()
       if effective.len > 0:
@@ -174,52 +154,37 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
       result.response.headers = parseHeaders(request.responseHeadersRaw)
       result.response.body = move request.responseBody
       result.error = noTransportError()
-    except CatchableError:
-      result.error = newTransportError(teInternal, getCurrentExceptionMsg())
+  except CatchableError:
+    result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: ptr HttpClientObj; message: string) =
+proc flushFailedLocked(client: var HttpClientObj; error: TransportError) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    client.storeCompletionLocked(
-      (newResponse(queued), newTransportError(teCanceled, message)))
+    client.storeCompletionLocked((newResponse(queued), error))
 
   for req in values(client.inFlight):
     try:
       client.multi.removeHandle(req.easy)
-    except CatchableError:
+    except IOError:
       discard
     client.availableEasy.add(move req.easy)
-    client.storeCompletionLocked(
-      (newResponse(req), newTransportError(teCanceled, message)))
+    client.storeCompletionLocked((newResponse(req), error))
   client.inFlight.clear()
 
-proc runEasyLoop(client: ptr HttpClientObj): bool =
+proc runEasyLoop(client: var HttpClientObj): bool =
   result = true
   try:
     discard client.multi.perform()
     discard client.multi.poll(MultiWaitMaxMs)
-  except CatchableError:
-    let loopError = getCurrentExceptionMsg()
-    acquire(client.lock)
-    while client.queue.len > 0:
-      let queued = client.queue.popFirst()
-      client.storeCompletionLocked(
-        (newResponse(queued), newTransportError(teInternal, loopError)))
-    for req in values(client.inFlight):
-      try:
-        client.multi.removeHandle(req.easy)
-      except CatchableError:
-        discard
-      client.availableEasy.add(move req.easy)
-      client.storeCompletionLocked(
-        (newResponse(req), newTransportError(teInternal, loopError)))
-    client.inFlight.clear()
-    client.abortRequested = true
-    signal(client.wakeCond)
-    release(client.lock)
+  except IOError:
+    let error = newTransportError(teInternal, getCurrentExceptionMsg())
+    withLock client.lock:
+      client.flushFailedLocked(error)
+      client.state = csAborting
+      signal(client.wakeCond)
     result = false
 
-proc processDoneMessages(client: ptr HttpClientObj) =
+proc processDoneMessages(client: var HttpClientObj) =
   var msg: CURLMsg
   var msgsInQueue = 0
   while client.multi.tryInfoRead(msg, msgsInQueue):
@@ -231,25 +196,19 @@ proc processDoneMessages(client: ptr HttpClientObj) =
       release(client.lock)
 
       if request != nil:
-        var removeError = ""
-        try:
-          client.multi.removeHandle(msg)
-        except CatchableError:
-          removeError = getCurrentExceptionMsg()
+        let completion = completionFromCurl(client, request, msg.data.result)
+        withLock client.lock:
+          client.availableEasy.add(move request.easy)
+          client.storeCompletionLocked(completion)
 
-        let completion = completionFromCurl(request, msg.data.result, removeError)
-        acquire(client.lock)
-        client.availableEasy.add(move request.easy)
-        client.storeCompletionLocked(completion)
-        release(client.lock)
-
-proc dispatchQueuedRequests(client: ptr HttpClientObj) =
+proc dispatchQueuedRequests(client: var HttpClientObj) =
   var done = false
   while not done:
     var request: RequestWrap
     var easy: Easy
     acquire(client.lock)
-    if client.abortRequested or client.availableEasy.len == 0 or client.queue.len == 0:
+    if client.state == csAborting or client.availableEasy.len == 0 or
+        client.queue.len == 0:
       done = true
     else:
       request = client.queue.popFirst()
@@ -257,138 +216,139 @@ proc dispatchQueuedRequests(client: ptr HttpClientObj) =
     release(client.lock)
 
     if not done:
-      var dispatched = true
-      var dispatchError = ""
+      request.easy = move easy
+      var error: TransportError
       try:
-        request.easy = move easy
         configureEasy(client, request, request.easy)
         client.multi.addHandle(request.easy)
       except CatchableError:
-        dispatched = false
-        dispatchError = getCurrentExceptionMsg()
+        error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-      acquire(client.lock)
-      if dispatched:
-        client.inFlight[handleKey(request.easy)] = request
-      else:
-        client.availableEasy.add(move request.easy)
-        client.storeCompletionLocked(
-          (newResponse(request), newTransportError(teInternal, dispatchError)))
-      release(client.lock)
+      withLock client.lock:
+        if error.kind == teNone:
+          client.inFlight[handleKey(request.easy)] = request
+        else:
+          client.availableEasy.add(move request.easy)
+          client.storeCompletionLocked((newResponse(request), error))
 
-proc waitForWorkOrClose(client: ptr HttpClientObj): bool =
+proc waitForWorkOrClose(client: var HttpClientObj): bool =
   result = true
   acquire(client.lock)
-  while not client.abortRequested and not client.closeRequested and
+  while client.state == csRunning and
       client.queue.len == 0 and client.inFlight.len == 0:
     wait(client.wakeCond, client.lock)
 
-  if client.abortRequested:
+  if client.state == csAborting:
     result = false
-  elif client.closeRequested and client.queue.len == 0 and client.inFlight.len == 0:
+  elif client.state == csStopping and client.queue.len == 0 and client.inFlight.len == 0:
     result = false
   release(client.lock)
 
-proc workerMain(clientPtr: ptr HttpClientObj) {.thread, raises: [].} =
-  let client = clientPtr
+proc workerMain(client: ptr HttpClientObj) {.thread, raises: [].} =
   while true:
-    dispatchQueuedRequests(client)
+    dispatchQueuedRequests(client[])
 
     acquire(client.lock)
     let hasInflight = client.inFlight.len > 0
-    let shouldAbort = client.abortRequested
+    let shouldAbort = client.state == csAborting
     release(client.lock)
 
     if shouldAbort:
-      acquire(client.lock)
-      flushCanceledLocked(client, "Canceled in abort")
-      release(client.lock)
+      withLock client.lock:
+        client[].flushFailedLocked(newTransportError(teCanceled, "Canceled in abort"))
       break
 
     if hasInflight:
-      if not runEasyLoop(client):
+      if not runEasyLoop(client[]):
         break
-      processDoneMessages(client)
-    elif not waitForWorkOrClose(client):
+      processDoneMessages(client[])
+    elif not waitForWorkOrClose(client[]):
       break
 
   acquire(client.lock)
-  client.workerRunning = false
+  client.state = csStopped
   broadcast(client.resultCond)
   release(client.lock)
 
 proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     maxRedirects = 10): HttpClient =
-  let client = HttpClient(maxInFlight: max(1, maxInFlight),
-    defaultTimeoutMs: max(1, defaultTimeoutMs), maxRedirects: max(0, maxRedirects))
+  ## Call close or abort before releasing the client.
+  let client = HttpClient(defaultTimeoutMs: max(1, defaultTimeoutMs),
+    maxRedirects: max(0, maxRedirects))
+  initCurl()
   initLock(client.lock)
   initCond(client.wakeCond)
   initCond(client.resultCond)
-  client.initialized = true
-  initCurl()
-  client.globalInitialized = true
-  client.multi = initMulti()
-  for _ in 0..<client.maxInFlight:
-    client.availableEasy.add(initEasy())
-  client.workerRunning = true
-  createThread(client.thread, workerMain, cast[ptr HttpClientObj](client))
-  client.threadStarted = true
-  result = client
+  try:
+    client.multi = initMulti()
+    for _ in 0..<max(1, maxInFlight):
+      client.availableEasy.add(initEasy())
+    createThread(client.thread, workerMain, addr client[])
+    result = client
+  finally:
+    if result == nil:
+      reset(client.availableEasy)
+      reset(client.multi)
+      cleanupCurl()
+      deinitCond(client.resultCond)
+      deinitCond(client.wakeCond)
+      deinitLock(client.lock)
 
-proc shutdown(client: ptr HttpClientObj; aborting: bool) =
-  acquire(client.lock)
-  let join = not client.closed
-  if join:
-    client.closeRequested = true
-    client.abortRequested = aborting
+proc shutdown(client: var HttpClientObj; aborting: bool) =
+  if not client.closed:
+    acquire(client.lock)
+    if client.state in {csRunning, csStopping}:
+      client.state = if aborting: csAborting else: csStopping
     signal(client.wakeCond)
     client.multi.wakeup()
-  release(client.lock)
-  if join:
-    if client.threadStarted: joinThread(client.thread)
-    acquire(client.lock)
-    client.closed = true
-    client.availableEasy.reset()
-    client.queue.clear()
-    client.inFlight.clear()
-    client.readyResults.clear()
-    reset(client.multi)
-    broadcast(client.resultCond)
     release(client.lock)
-    if client.globalInitialized:
-      cleanupCurl()
-      client.globalInitialized = false
+    joinThread(client.thread)
+    reset(client.availableEasy)
+    reset(client.queue)
+    reset(client.inFlight)
+    reset(client.readyResults)
+    reset(client.multi)
+    cleanupCurl()
+    deinitCond(client.resultCond)
+    deinitCond(client.wakeCond)
+    deinitLock(client.lock)
+    client.closed = true
 
 proc close*(client: HttpClient) =
-  if client != nil: cast[ptr HttpClientObj](client).shutdown(false)
+  if client != nil: client[].shutdown(false)
 
 proc abort*(client: HttpClient) =
-  if client != nil: cast[ptr HttpClientObj](client).shutdown(true)
+  if client != nil: client[].shutdown(true)
 
 proc hasRequests*(client: HttpClient): bool =
+  if client.closed: return false
   acquire(client.lock)
   result = client.queue.len > 0 or client.inFlight.len > 0
   release(client.lock)
 
 proc numInFlight*(client: HttpClient): int =
+  if client.closed: return 0
   acquire(client.lock)
   result = client.inFlight.len
   release(client.lock)
 
 proc queueLen*(client: HttpClient): int =
+  if client.closed: return 0
   acquire(client.lock)
   result = client.queue.len
   release(client.lock)
 
 proc clearQueue*(client: HttpClient) =
+  if client.closed: return
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    cast[ptr HttpClientObj](client).storeCompletionLocked(
+    client[].storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
 proc clientIsBusy(client: HttpClient): bool =
+  if client.closed: return false
   acquire(client.lock)
   result =
     client.queue.len > 0 or
@@ -410,34 +370,36 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
   )
 
 proc startRequests*(client: HttpClient; batch: var RequestBatch) =
-  acquire(client.lock)
-  if client.closed or client.closeRequested:
-    release(client.lock)
+  if client.closed:
     raise newException(IOError, "client is closed")
-  
-  for request in batch.requests.mitems:
-    client.queue.addLast(wrapRequest(move request))
-  batch.requests.setLen(0)
-  
-  signal(client.wakeCond)
-  client.multi.wakeup()
-  release(client.lock)
+  withLock client.lock:
+    if client.state != csRunning:
+      raise newException(IOError, "client is closed")
+
+    for request in batch.requests.mitems:
+      client.queue.addLast(wrapRequest(move request))
+    batch.requests.setLen(0)
+
+    signal(client.wakeCond)
+    client.multi.wakeup()
 
 proc startRequest*(client: HttpClient; request: sink RequestSpec) =
-  acquire(client.lock)
-  if client.closed or client.closeRequested:
-    release(client.lock)
+  if client.closed:
     raise newException(IOError, "client is closed")
-  
-  client.queue.addLast(wrapRequest(request))
-  
-  signal(client.wakeCond)
-  client.multi.wakeup()
-  release(client.lock)
+  withLock client.lock:
+    if client.state != csRunning:
+      raise newException(IOError, "client is closed")
+
+    client.queue.addLast(wrapRequest(request))
+
+    signal(client.wakeCond)
+    client.multi.wakeup()
 
 proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
+  if client.closed: return false
   acquire(client.lock)
-  while client.readyResults.len == 0 and client.workerRunning:
+  while client.readyResults.len == 0 and
+      client.state in {csRunning, csStopping, csAborting}:
     wait(client.resultCond, client.lock)
 
   if client.readyResults.len > 0:
@@ -448,6 +410,7 @@ proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
   release(client.lock)
 
 proc pollForResult*(client: HttpClient; outResult: var RequestResult): bool =
+  if client.closed: return false
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
