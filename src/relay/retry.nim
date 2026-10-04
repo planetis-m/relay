@@ -18,11 +18,12 @@ proc initRetryPolicy*(maxAttempts = 5; baseDelayMs = RetryBaseDelayMs;
     maxDelayMs = RetryMaxDelayMs;
     jitterDivisor = RetryJitterDivisor): RetryPolicy =
   ## Builds a `RetryPolicy` with standard backoff defaults.
-  RetryPolicy(
+  result = RetryPolicy(
     maxAttempts: maxAttempts,
     baseDelayMs: baseDelayMs,
     maxDelayMs: maxDelayMs,
-    jitterDivisor: jitterDivisor)
+    jitterDivisor: jitterDivisor
+  )
 
 proc backoffBaseMs*(attempt: Positive; baseDelayMs: Natural; maxDelayMs: Natural): int =
   ## Exponential backoff base delay in ms, capped at `maxDelayMs`.
@@ -51,8 +52,7 @@ proc retryDelayMs*(rng: var Rand; attempt: Positive; policy: RetryPolicy): int =
 proc retryDelayMs*(rng: var Rand; attempt: Positive; baseDelayMs: Natural;
     maxDelayMs: Natural): int {.inline.} =
   ## Backoff delay in ms with jitter, using the default jitter divisor.
-  retryDelayMs(rng, attempt, initRetryPolicy(baseDelayMs = baseDelayMs,
-    maxDelayMs = maxDelayMs))
+  retryDelayMs(rng, attempt, initRetryPolicy(baseDelayMs = baseDelayMs, maxDelayMs = maxDelayMs))
 
 proc isRetryable*(code: HttpCode): bool {.inline.} =
   ## Returns true for 408, 409, 425, 429, and any 5xx status.

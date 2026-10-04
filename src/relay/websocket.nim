@@ -121,7 +121,7 @@ proc finish(client: var WebSocketClientObj; conn: Connection;
     except IOError:
       discard
     conn.flags.excl(cfAttached)
-  system.reset(conn.easy)
+  reset(conn.easy)
   reset(conn.headers)
   acquire(client.lock)
   conn.mailbox.terminal = true
