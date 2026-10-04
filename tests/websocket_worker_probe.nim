@@ -1,6 +1,6 @@
 ## Bounded independent wire fixtures; no external URLs or provider calls.
 import std/[assertions, monotimes, os, strutils, times]
-import relay
+import relay/http
 import relay/websocket
 
 proc resultFor(service: WebSocketClient; operation: OperationId): WebSocketResult =

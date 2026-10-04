@@ -1,4 +1,5 @@
-# Minimal libcurl bindings used by Relay.
+## Minimal libcurl declarations shared by HTTP and WebSocket clients.
+import std/nativesockets
 
 type
   CURL* = ptr object
@@ -23,6 +24,17 @@ type
     easy_handle*: CURL
     data*: CURLMsgData
 
+  curl_off_t* {.importc, header: "<curl/curl.h>".} = int64
+  curl_ws_frame* {.importc: "const struct curl_ws_frame", header: "<curl/curl.h>",
+      bycopy.} = object
+    age*, flags*: cint
+    offset*, bytesleft*: curl_off_t
+    len*: csize_t
+  curl_waitfd* {.importc: "struct curl_waitfd", header: "<curl/multi.h>",
+      bycopy.} = object
+    fd*: SocketHandle
+    events*, revents*: cshort
+
   curl_write_callback* = proc(buffer: ptr char; size, nitems: csize_t;
       outstream: pointer): csize_t {.cdecl.}
 
@@ -31,6 +43,8 @@ proc `==`*(a, b: CURLMcode): bool {.borrow.}
 proc `==`*(a, b: CurlMsgType): bool {.borrow.}
 
 const
+  CURL_GLOBAL_DEFAULT* = clong(3)
+
   CURLE_OK* = CURLcode(0)
   CURLE_COULDNT_RESOLVE_PROXY* = CURLcode(5)
   CURLE_COULDNT_RESOLVE_HOST* = CURLcode(6)
@@ -39,6 +53,7 @@ const
   CURLE_SSL_CONNECT_ERROR* = CURLcode(35)
   CURLE_ABORTED_BY_CALLBACK* = CURLcode(42)
   CURLE_PEER_FAILED_VERIFICATION* = CURLcode(60)
+  CURLE_AGAIN* = CURLcode(81)
 
   CURLM_OK* = CURLMcode(0)
 
@@ -48,6 +63,7 @@ const
 
   CURLOPT_WRITEDATA* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 1)
   CURLOPT_URL* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 2)
+  CURLOPT_PROXY* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 4)
   CURLOPT_ERRORBUFFER* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 10)
   CURLOPT_WRITEFUNCTION* = CURLoption(CURLOPTTYPE_FUNCTIONPOINT + 11)
   CURLOPT_POSTFIELDS* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 15)
@@ -59,14 +75,17 @@ const
   CURLOPT_FOLLOWLOCATION* = CURLoption(CURLOPTTYPE_LONG + 52)
   CURLOPT_POSTFIELDSIZE* = CURLoption(CURLOPTTYPE_LONG + 60)
   CURLOPT_SSL_VERIFYPEER* = CURLoption(CURLOPTTYPE_LONG + 64)
+  CURLOPT_CAINFO* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 65)
   CURLOPT_MAXREDIRS* = CURLoption(CURLOPTTYPE_LONG + 68)
   CURLOPT_HEADERFUNCTION* = CURLoption(CURLOPTTYPE_FUNCTIONPOINT + 79)
   CURLOPT_SSL_VERIFYHOST* = CURLoption(CURLOPTTYPE_LONG + 81)
   CURLOPT_HTTP_VERSION* = CURLoption(CURLOPTTYPE_LONG + 84)
   CURLOPT_NOSIGNAL* = CURLoption(CURLOPTTYPE_LONG + 99)
+  CURLOPT_CONNECT_ONLY* = CURLoption(CURLOPTTYPE_LONG + 141)
   CURLOPT_ACCEPT_ENCODING* = CURLoption(CURLOPTTYPE_OBJECTPOINT + 102)
   CURLOPT_TIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 155)
   CURLOPT_CONNECTTIMEOUT_MS* = CURLoption(CURLOPTTYPE_LONG + 156)
+  CURLOPT_WS_OPTIONS* = CURLoption(CURLOPTTYPE_LONG + 320)
 
   CURL_HTTP_VERSION_2TLS* = clong(4)
 
@@ -82,6 +101,19 @@ const
   CURLINFO_STRING* = 0x100000
   CURLINFO_EFFECTIVE_URL* = CURLINFO(CURLINFO_STRING + 1)
   CURLINFO_RESPONSE_CODE* = CURLINFO(CURLINFO_LONG + 2)
+  CURLINFO_ACTIVESOCKET* = CURLINFO(0x500000 + 44)
+
+  CURLWS_TEXT* = 1.cuint
+  CURLWS_BINARY* = 2.cuint
+  CURLWS_CONT* = 4.cuint
+  CURLWS_CLOSE* = 8.cuint
+  CURLWS_PING* = 16.cuint
+  CURLWS_OFFSET* = 32.cuint
+  CURLWS_PONG* = 64.cuint
+  CURLWS_NOAUTOPONG* = 2.clong
+
+  CURL_WAIT_POLLIN* = 1.cshort
+  CURL_WAIT_POLLOUT* = 4.cshort
 
 {.push importc, callconv: cdecl, header: "<curl/curl.h>".}
 
@@ -95,8 +127,13 @@ proc curl_easy_strerror*(code: CURLcode): cstring
 proc curl_slist_append*(list: ptr curl_slist, data: cstring): ptr curl_slist
 proc curl_slist_free_all*(list: ptr curl_slist)
 
-proc curl_global_init*(flags: culong): CURLcode
+proc curl_global_init*(flags: clong): CURLcode
 proc curl_global_cleanup*()
+
+proc curl_ws_recv*(curl: CURL; buffer: pointer; buflen: csize_t; received: ptr csize_t;
+    meta: ptr ptr curl_ws_frame): CURLcode
+proc curl_ws_send*(curl: CURL; buffer: pointer; buflen: csize_t; sent: ptr csize_t;
+    fragsize: curl_off_t; flags: cuint): CURLcode
 
 {.pop.}
 
