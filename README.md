@@ -149,8 +149,10 @@ proc abort*(client: Relay)
   thread.
 - `close` / `abort`: call from the same thread that created the `Relay`; do not
   invoke them concurrently from other threads.
-- Relay instances: current lifecycle uses global libcurl init/cleanup per
-  instance. Prefer a single active `Relay` instance in a process.
+- Relay instances coordinate process-wide libcurl initialization/cleanup.
+  HTTP and WebSocket workers can coexist and close in either order.
+- Aliases retain shared lifecycle state; repeated close/abort calls are safe.
+  Dropping the final owner aborts and joins automatically.
 
 ### Building Request Batches
 
@@ -277,5 +279,38 @@ nim c -r examples/streaming.nim
 ## Tests
 
 ```bash
-nimble test
+nim test tests/ci.nims
 ```
+
+## Persistent WebSockets
+
+`import relay/websocket` provides a separate worker servicing multiple persistent
+connections alongside the HTTP worker. See [the contract](WEBSOCKETS.md) for IDs,
+message kinds, bounded queues, deadlines, cancellation and lifecycle.
+
+```nim
+import relay/websocket
+
+let client = newWebSocketService()
+defer: client.close()
+let ids = client.startConnect("wss://example.com/socket")
+var completion: WebSocketResult
+if client.waitForResult(completion) and completion.error.kind == teNone:
+  discard client.startSend(ids.connectionId,
+    WebSocketMessage(kind: wmText, data: "hello"))
+  discard client.waitForResult(completion)
+  var event: WebSocketEvent
+  if client.waitForEvent(ids.connectionId, event):
+    echo event.kind
+```
+
+Standalone local correctness checks (Node is development tooling only):
+
+```sh
+sh tests/verify-websocket.sh
+```
+
+These checks require Node.js and OpenSSL as development tooling, and a
+WebSocket-enabled libcurl 8.14+ with matching headers. The existing HTTP test suite
+continues to run independently with `nim test tests/ci.nims`. Linux is the verified
+WebSocket platform; see the contract for remaining validation limits.

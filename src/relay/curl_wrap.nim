@@ -1,4 +1,6 @@
+import std/locks
 import ./bindings/curl
+from ./bindings/websockets import curl_multi_wakeup
 
 export CurlMsgType, CURLMsg
 
@@ -13,7 +15,7 @@ type
   Slist* = object
     raw: ptr curl_slist
 
-proc `=destroy`(easy: Easy) =
+proc `=destroy`*(easy: Easy) =
   if easy.raw != nil:
     curl_easy_cleanup(easy.raw)
   `=destroy`(easy.errorBuf)
@@ -46,15 +48,18 @@ proc `=copy`*(dest: var Slist; src: Slist) {.error.}
 
 proc `=sink`*(dest: var Easy; src: Easy) =
   `=destroy`(dest)
+  `=wasMoved`(dest)
   dest.raw = src.raw
   `=sink`(dest.errorBuf, src.errorBuf)
 
 proc `=sink`*(dest: var Multi; src: Multi) =
   `=destroy`(dest)
+  `=wasMoved`(dest)
   dest.raw = src.raw
 
 proc `=sink`*(dest: var Slist; src: Slist) =
   `=destroy`(dest)
+  `=wasMoved`(dest)
   dest.raw = src.raw
 
 proc checkCurl(code: CURLcode; context: string) {.noinline.} =
@@ -69,8 +74,9 @@ proc initEasy*(): Easy =
   result = Easy(raw: curl_easy_init(), errorBuf: newString(256))
   if result.raw == nil:
     raise newException(IOError, "curl_easy_init failed")
-  discard curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, result.errorBuf.cstring)
-  discard curl_easy_setopt(result.raw, CURLOPT_NOSIGNAL, clong(1))
+  checkCurl(curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, result.errorBuf.cstring),
+    "CURLOPT_ERRORBUFFER failed")
+  checkCurl(curl_easy_setopt(result.raw, CURLOPT_NOSIGNAL, clong(1)), "CURLOPT_NOSIGNAL failed")
 
 proc initMulti*(): Multi =
   result = Multi(raw: curl_multi_init())
@@ -79,11 +85,26 @@ proc initMulti*(): Multi =
   checkMulti(curl_multi_setopt(result.raw, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX),
     "CURLMOPT_PIPELINING failed")
 
+var globalLock: Lock
+var globalUsers = 0
+initLock(globalLock)
+
 proc initGlobal*() =
-  checkCurl(curl_global_init(culong(3)), "curl_global_init failed")
+  acquire(globalLock)
+  try:
+    if globalUsers == 0:
+      checkCurl(curl_global_init(culong(3)), "curl_global_init failed")
+    inc globalUsers
+  finally:
+    release(globalLock)
 
 proc cleanupGlobal*() =
-  curl_global_cleanup()
+  acquire(globalLock)
+  if globalUsers > 0:
+    dec globalUsers
+    if globalUsers == 0:
+      curl_global_cleanup()
+  release(globalLock)
 
 proc addHandle*(multi: var Multi; easy: Easy) =
   checkMulti(curl_multi_add_handle(multi.raw, easy.raw), "curl_multi_add_handle failed")
@@ -199,12 +220,17 @@ proc effectiveUrl*(easy: Easy): string =
   result = $urlPtr
 
 proc addHeader*(list: var Slist; headerLine: string) =
-  list.raw = curl_slist_append(list.raw, headerLine.cstring)
-  if list.raw.isNil:
+  let added = curl_slist_append(list.raw, headerLine.cstring)
+  if added.isNil:
     raise newException(IOError, "curl_slist_append failed")
+  list.raw = added
 
 proc handleKey*(easy: Easy): pointer =
   easy.raw
 
 proc handleKey*(msg: CURLMsg): pointer =
   msg.easy_handle
+
+proc wakeup*(multi: Multi) {.raises: [].} =
+  if multi.raw != nil:
+    discard curl_multi_wakeup(multi.raw)

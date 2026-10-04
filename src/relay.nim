@@ -1,11 +1,12 @@
 import std/[deques, locks, tables]
 import ./relay/bindings/curl
-import ./relay/[http_headers, http_query, http_status, retry, curl_wrap]
+import ./relay/[http_headers, http_query, http_status, retry, curl_wrap, transport_errors]
 
 export http_headers
 export http_query
 export http_status
 export retry
+export transport_errors
 
 const
   MultiWaitMaxMs = 250
@@ -22,21 +23,6 @@ type
     hvOptions = "OPTIONS",
     hvConnect = "CONNECT",
     hvTrace = "TRACE"
-
-  TransportErrorKind* = enum
-    teNone,
-    teTimeout,
-    teNetwork,
-    teDns,
-    teTls,
-    teCanceled,
-    teProtocol,
-    teInternal
-
-  TransportError* = object
-    kind*: TransportErrorKind
-    message*: string
-    curlCode*: int
 
   RequestInfo* = object
     verb*: HttpVerb
@@ -76,11 +62,13 @@ type
     easy: Easy
     curlHeaders: Slist
 
-  RelayObj = object
+  # Synchronization primitives must retain identity during automatic destruction.
+  RelayObj {.byref.} = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
     thread: Thread[ptr RelayObj] # break cycle
+    initialized, globalInitialized, threadStarted: bool
     workerRunning: bool
     closeRequested: bool
     abortRequested: bool
@@ -94,6 +82,21 @@ type
     inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[RequestResult]
   Relay* = ref RelayObj
+
+proc shutdown(client: ptr RelayObj; aborting: bool) {.raises: [].}
+
+proc `=destroy`(client: RelayObj) =
+  let owner = cast[ptr RelayObj](addr client)
+  if client.initialized:
+    owner.shutdown(true)
+    deinitCond(owner.resultCond)
+    deinitCond(owner.wakeCond)
+    deinitLock(owner.lock)
+  `=destroy`(owner.multi)
+  `=destroy`(owner.availableEasy)
+  `=destroy`(owner.queue)
+  `=destroy`(owner.inFlight)
+  `=destroy`(owner.readyResults)
 
 proc isRetryable*(kind: TransportErrorKind): bool {.inline.} =
   ## Returns true for timeouts, network, DNS, TLS, and internal errors.
@@ -165,11 +168,11 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     )
   )
 
-proc storeCompletionLocked(client: Relay; item: sink RequestResult) =
+proc storeCompletionLocked(client: ptr RelayObj; item: sink RequestResult) =
   client.readyResults.addLast(item)
-  signal(client.resultCond)
+  broadcast(client.resultCond)
 
-proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
+proc configureEasy(client: ptr RelayObj; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
   easy.setHttpVersion2Tls()
@@ -216,7 +219,7 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: Relay; message: string) =
+proc flushCanceledLocked(client: ptr RelayObj; message: string) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
     client.storeCompletionLocked(
@@ -232,7 +235,7 @@ proc flushCanceledLocked(client: Relay; message: string) =
       (newResponse(req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
 
-proc runEasyLoop(client: Relay): bool =
+proc runEasyLoop(client: ptr RelayObj): bool =
   result = true
   try:
     discard client.multi.perform()
@@ -245,6 +248,11 @@ proc runEasyLoop(client: Relay): bool =
       client.storeCompletionLocked(
         (newResponse(queued), newTransportError(teInternal, loopError)))
     for req in values(client.inFlight):
+      try:
+        client.multi.removeHandle(req.easy)
+      except CatchableError:
+        discard
+      client.availableEasy.add(move req.easy)
       client.storeCompletionLocked(
         (newResponse(req), newTransportError(teInternal, loopError)))
     client.inFlight.clear()
@@ -253,7 +261,7 @@ proc runEasyLoop(client: Relay): bool =
     release(client.lock)
     result = false
 
-proc processDoneMessages(client: Relay) =
+proc processDoneMessages(client: ptr RelayObj) =
   var msg: CURLMsg
   var msgsInQueue = 0
   while client.multi.tryInfoRead(msg, msgsInQueue):
@@ -277,7 +285,7 @@ proc processDoneMessages(client: Relay) =
         client.storeCompletionLocked(completion)
         release(client.lock)
 
-proc dispatchQueuedRequests(client: Relay) =
+proc dispatchQueuedRequests(client: ptr RelayObj) =
   var done = false
   while not done:
     var request: RequestWrap
@@ -310,7 +318,7 @@ proc dispatchQueuedRequests(client: Relay) =
           (newResponse(request), newTransportError(teInternal, dispatchError)))
       release(client.lock)
 
-proc waitForWorkOrClose(client: Relay): bool =
+proc waitForWorkOrClose(client: ptr RelayObj): bool =
   result = true
   acquire(client.lock)
   while not client.abortRequested and not client.closeRequested and
@@ -324,7 +332,7 @@ proc waitForWorkOrClose(client: Relay): bool =
   release(client.lock)
 
 proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
-  let client = cast[Relay](clientPtr)
+  let client = clientPtr
   while true:
     dispatchQueuedRequests(client)
 
@@ -348,86 +356,56 @@ proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
 
   acquire(client.lock)
   client.workerRunning = false
-  signal(client.resultCond)
+  broadcast(client.resultCond)
   release(client.lock)
 
 proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     maxRedirects = 10): Relay =
+  let client = Relay(maxInFlight: max(1, maxInFlight),
+    defaultTimeoutMs: max(1, defaultTimeoutMs), maxRedirects: max(0, maxRedirects))
+  initLock(client.lock)
+  initCond(client.wakeCond)
+  initCond(client.resultCond)
+  client.initialized = true
   initGlobal()
+  client.globalInitialized = true
+  client.multi = initMulti()
+  for _ in 0..<client.maxInFlight:
+    client.availableEasy.add(initEasy())
+  client.workerRunning = true
+  createThread(client.thread, workerMain, cast[ptr RelayObj](client))
+  client.threadStarted = true
+  result = client
 
-  result = Relay(
-    maxInFlight: max(1, maxInFlight),
-    defaultTimeoutMs: max(1, defaultTimeoutMs),
-    maxRedirects: max(0, maxRedirects),
-    workerRunning: true,
-    multi: initMulti(),
-    queue: initDeque[RequestWrap](),
-    readyResults: initDeque[RequestResult](),
-    inFlight: initTable[pointer, RequestWrap](),
-    availableEasy: @[]
-  )
-
-  initLock(result.lock)
-  initCond(result.wakeCond)
-  initCond(result.resultCond)
-
-  for _ in 0..<result.maxInFlight:
-    result.availableEasy.add(initEasy())
-
-  createThread(result.thread, workerMain, cast[ptr RelayObj](result))
+proc shutdown(client: ptr RelayObj; aborting: bool) =
+  acquire(client.lock)
+  let join = not client.closed
+  if join:
+    client.closeRequested = true
+    client.abortRequested = aborting
+    signal(client.wakeCond)
+    client.multi.wakeup()
+  release(client.lock)
+  if join:
+    if client.threadStarted: joinThread(client.thread)
+    acquire(client.lock)
+    client.closed = true
+    client.availableEasy.reset()
+    client.queue.clear()
+    client.inFlight.clear()
+    client.readyResults.clear()
+    reset(client.multi)
+    broadcast(client.resultCond)
+    release(client.lock)
+    if client.globalInitialized:
+      cleanupGlobal()
+      client.globalInitialized = false
 
 proc close*(client: Relay) =
-  if client.isNil:
-    return
-
-  acquire(client.lock)
-  if client.closed:
-    release(client.lock)
-  else:
-    client.closeRequested = true
-    signal(client.wakeCond)
-    release(client.lock)
-    joinThread(client.thread)
-
-    acquire(client.lock)
-    client.closed = true
-    client.availableEasy.reset()
-    client.queue.clear()
-    client.inFlight.clear()
-    client.readyResults.clear()
-    release(client.lock)
-
-    deinitCond(client.resultCond)
-    deinitCond(client.wakeCond)
-    deinitLock(client.lock)
-    cleanupGlobal()
+  if client != nil: cast[ptr RelayObj](client).shutdown(false)
 
 proc abort*(client: Relay) =
-  if client.isNil:
-    return
-
-  acquire(client.lock)
-  if client.closed:
-    release(client.lock)
-  else:
-    client.abortRequested = true
-    client.closeRequested = true
-    signal(client.wakeCond)
-    release(client.lock)
-    joinThread(client.thread)
-
-    acquire(client.lock)
-    client.closed = true
-    client.availableEasy.reset()
-    client.queue.clear()
-    client.inFlight.clear()
-    client.readyResults.clear()
-    release(client.lock)
-
-    deinitCond(client.resultCond)
-    deinitCond(client.wakeCond)
-    deinitLock(client.lock)
-    cleanupGlobal()
+  if client != nil: cast[ptr RelayObj](client).shutdown(true)
 
 proc hasRequests*(client: Relay): bool =
   acquire(client.lock)
@@ -448,7 +426,7 @@ proc clearQueue*(client: Relay) =
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    client.storeCompletionLocked(
+    cast[ptr RelayObj](client).storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
@@ -484,6 +462,7 @@ proc startRequests*(client: Relay; batch: var RequestBatch) =
   batch.requests.setLen(0)
   
   signal(client.wakeCond)
+  client.multi.wakeup()
   release(client.lock)
 
 proc startRequest*(client: Relay; request: sink RequestSpec) =
@@ -495,6 +474,7 @@ proc startRequest*(client: Relay; request: sink RequestSpec) =
   client.queue.addLast(wrapRequest(request))
   
   signal(client.wakeCond)
+  client.multi.wakeup()
   release(client.lock)
 
 proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
