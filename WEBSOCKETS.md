@@ -12,8 +12,8 @@ libcurl 8.14+ with matching headers.
 ```nim
 proc newWebSocket*(defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     bypassProxy = false): WebSocket
-proc connect*(client: WebSocket; url: string; timeoutMs = 0)
-proc send*(client: WebSocket; text: string; timeoutMs = 0)
+proc connect*(client: WebSocket; url: sink string; timeoutMs = 0)
+proc send*(client: WebSocket; text: sink string; timeoutMs = 0)
 proc receive*(client: WebSocket; timeoutMs = 0): string
 proc close*(client: WebSocket)
 ```
@@ -71,6 +71,8 @@ returns false. Event waits return false on timeout or unknown/drained IDs.
   Connect/send deadlines include queue time; an expired send closes its connection.
 - An event-wait timeout returns false and leaves the worker connection open.
   Blocking `WebSocket.receive` raises `TimeoutError` and leaves the connection open.
+- Submission takes sink arguments: pass `move(message)` or `move(text)` to transfer
+  a disposable payload; arguments used again are copied for the queue.
 - Always call `close` or `abort` before releasing the final owner, using `try/finally`.
   Shutdown belongs to the creating thread after other callers finish. Repeated calls
   are safe; destruction does not stop workers. Drain retained worker results/events

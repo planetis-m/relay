@@ -266,15 +266,14 @@ proc writeFrames(client: var WebSocketClientObj; conn: Connection) =
   # Finish either partially sent frame before switching between data/control queues.
   if conn.sends.len > 0 and conn.controlOffset == 0 and
       (cfFrameStarted in conn.flags or (conn.state != cnClosing and conn.controls.len == 0)):
-    let cmd = conn.sends.peekFirst()
-    if conn.writeData(cmd):
+    if conn.writeData(conn.sends.peekFirst()):
       client.completion(conn.sends.popFirst())
       conn.offset = 0
       conn.flags.excl(cfFrameStarted)
   if cfFrameStarted notin conn.flags and conn.controls.len > 0:
-    let control = conn.controls.peekFirst()
-    if conn.writeFrame(control.data, control.flags, conn.controlOffset):
-      if control.flags == CURLWS_CLOSE: conn.flags.incl(cfCloseSent)
+    let flags = conn.controls.peekFirst().flags
+    if conn.writeFrame(conn.controls.peekFirst().data, flags, conn.controlOffset):
+      if flags == CURLWS_CLOSE: conn.flags.incl(cfCloseSent)
       discard conn.controls.popFirst()
       conn.controlOffset = 0
 
@@ -290,15 +289,15 @@ proc processCommands(client: var WebSocketClientObj; connections: var seq[Connec
   swap(commands, client.commands)
   release(client.lock)
   while commands.len > 0:
-    let cmd = commands.popFirst()
+    var cmd = commands.popFirst()
     case cmd.kind
     of wcConnect:
       acquire(client.lock)
       let box = client.mailbox(cmd.connectionId)
       release(client.lock)
-      let conn = Connection(mailbox: box, connectCommand: cmd)
+      let conn = Connection(mailbox: box, connectCommand: move cmd)
       connections.add(conn)
-      if getMonoTime() >= cmd.deadline:
+      if getMonoTime() >= conn.connectCommand.deadline:
         client.finish(conn, newTransportError(teTimeout, "WebSocket connect timed out"))
       else:
         try:
@@ -626,7 +625,7 @@ proc close*(client: WebSocket) =
     client.connected = false
     client.service.close()
 
-proc connect*(client: WebSocket; url: string; timeoutMs = 0) =
+proc connect*(client: WebSocket; url: sink string; timeoutMs = 0) =
   ## Open a ws/wss connection. Requires an open, disconnected client.
   ## Close the client after a failed connection attempt.
   assert not client.connected, "WebSocket client is already connected"
@@ -637,7 +636,7 @@ proc connect*(client: WebSocket; url: string; timeoutMs = 0) =
   raiseTransport(completion.error)
   client.connected = true
 
-proc send*(client: WebSocket; text: string; timeoutMs = 0) =
+proc send*(client: WebSocket; text: sink string; timeoutMs = 0) =
   ## Send UTF-8 text and wait for completion. Requires a connected client.
   assert client.connected, "WebSocket client is not connected"
   discard client.service.startSend(client.id,
