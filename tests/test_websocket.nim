@@ -54,12 +54,14 @@ block serviceOwnership:
 
 block disconnected:
   let client = newWebSocket()
-  defer: client.close()
-  doAssertRaises IOError: client.send("hello")
-  doAssertRaises IOError: discard client.receive()
-  for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
-      "ws://localhost/#fragment", "ws://localhost/\n", "ws://localhost/\0hidden"]:
-    doAssertRaises ValueError: client.connect(url)
+  try:
+    doAssertRaises IOError: client.send("hello")
+    doAssertRaises IOError: discard client.receive()
+    for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
+        "ws://localhost/#fragment", "ws://localhost/\n", "ws://localhost/\0hidden"]:
+      doAssertRaises ValueError: client.connect(url)
+  finally:
+    client.close()
 
 block sharedClose:
   let client = newWebSocket(defaultTimeoutMs = 0, maxMessageBytes = 0)

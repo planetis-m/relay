@@ -63,11 +63,11 @@ type
     curlHeaders: Slist
 
   # Synchronization primitives must retain identity during automatic destruction.
-  RelayObj {.byref.} = object
+  HttpClientObj {.byref.} = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
-    thread: Thread[ptr RelayObj] # break cycle
+    thread: Thread[ptr HttpClientObj] # break cycle
     initialized, globalInitialized, threadStarted: bool
     workerRunning: bool
     closeRequested: bool
@@ -81,12 +81,15 @@ type
     queue: Deque[RequestWrap]
     inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[RequestResult]
-  Relay* = ref RelayObj
+  HttpClient* = ref HttpClientObj
+    ## HTTP request worker with shared lifetime and completion-order results.
+  Relay* = HttpClient
+    ## Compatibility name for HttpClient.
 
-proc shutdown(client: ptr RelayObj; aborting: bool) {.raises: [].}
+proc shutdown(client: ptr HttpClientObj; aborting: bool) {.raises: [].}
 
-proc `=destroy`(client: RelayObj) =
-  let owner = cast[ptr RelayObj](addr client)
+proc `=destroy`(client: HttpClientObj) =
+  let owner = cast[ptr HttpClientObj](addr client)
   if client.initialized:
     owner.shutdown(true)
     deinitCond(owner.resultCond)
@@ -168,11 +171,11 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     )
   )
 
-proc storeCompletionLocked(client: ptr RelayObj; item: sink RequestResult) =
+proc storeCompletionLocked(client: ptr HttpClientObj; item: sink RequestResult) =
   client.readyResults.addLast(item)
   broadcast(client.resultCond)
 
-proc configureEasy(client: ptr RelayObj; request: RequestWrap; easy: var Easy) =
+proc configureEasy(client: ptr HttpClientObj; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
   easy.setHttpVersion2Tls()
@@ -219,7 +222,7 @@ proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
     except CatchableError:
       result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: ptr RelayObj; message: string) =
+proc flushCanceledLocked(client: ptr HttpClientObj; message: string) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
     client.storeCompletionLocked(
@@ -235,7 +238,7 @@ proc flushCanceledLocked(client: ptr RelayObj; message: string) =
       (newResponse(req), newTransportError(teCanceled, message)))
   client.inFlight.clear()
 
-proc runEasyLoop(client: ptr RelayObj): bool =
+proc runEasyLoop(client: ptr HttpClientObj): bool =
   result = true
   try:
     discard client.multi.perform()
@@ -261,7 +264,7 @@ proc runEasyLoop(client: ptr RelayObj): bool =
     release(client.lock)
     result = false
 
-proc processDoneMessages(client: ptr RelayObj) =
+proc processDoneMessages(client: ptr HttpClientObj) =
   var msg: CURLMsg
   var msgsInQueue = 0
   while client.multi.tryInfoRead(msg, msgsInQueue):
@@ -285,7 +288,7 @@ proc processDoneMessages(client: ptr RelayObj) =
         client.storeCompletionLocked(completion)
         release(client.lock)
 
-proc dispatchQueuedRequests(client: ptr RelayObj) =
+proc dispatchQueuedRequests(client: ptr HttpClientObj) =
   var done = false
   while not done:
     var request: RequestWrap
@@ -318,7 +321,7 @@ proc dispatchQueuedRequests(client: ptr RelayObj) =
           (newResponse(request), newTransportError(teInternal, dispatchError)))
       release(client.lock)
 
-proc waitForWorkOrClose(client: ptr RelayObj): bool =
+proc waitForWorkOrClose(client: ptr HttpClientObj): bool =
   result = true
   acquire(client.lock)
   while not client.abortRequested and not client.closeRequested and
@@ -331,7 +334,7 @@ proc waitForWorkOrClose(client: ptr RelayObj): bool =
     result = false
   release(client.lock)
 
-proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
+proc workerMain(clientPtr: ptr HttpClientObj) {.thread, raises: [].} =
   let client = clientPtr
   while true:
     dispatchQueuedRequests(client)
@@ -359,9 +362,9 @@ proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
   broadcast(client.resultCond)
   release(client.lock)
 
-proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
-    maxRedirects = 10): Relay =
-  let client = Relay(maxInFlight: max(1, maxInFlight),
+proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
+    maxRedirects = 10): HttpClient =
+  let client = HttpClient(maxInFlight: max(1, maxInFlight),
     defaultTimeoutMs: max(1, defaultTimeoutMs), maxRedirects: max(0, maxRedirects))
   initLock(client.lock)
   initCond(client.wakeCond)
@@ -373,11 +376,16 @@ proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
   for _ in 0..<client.maxInFlight:
     client.availableEasy.add(initEasy())
   client.workerRunning = true
-  createThread(client.thread, workerMain, cast[ptr RelayObj](client))
+  createThread(client.thread, workerMain, cast[ptr HttpClientObj](client))
   client.threadStarted = true
   result = client
 
-proc shutdown(client: ptr RelayObj; aborting: bool) =
+proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
+    maxRedirects = 10): HttpClient {.inline.} =
+  ## Compatibility constructor; prefer newHttpClient for new code.
+  newHttpClient(maxInFlight, defaultTimeoutMs, maxRedirects)
+
+proc shutdown(client: ptr HttpClientObj; aborting: bool) =
   acquire(client.lock)
   let join = not client.closed
   if join:
@@ -401,36 +409,36 @@ proc shutdown(client: ptr RelayObj; aborting: bool) =
       cleanupGlobal()
       client.globalInitialized = false
 
-proc close*(client: Relay) =
-  if client != nil: cast[ptr RelayObj](client).shutdown(false)
+proc close*(client: HttpClient) =
+  if client != nil: cast[ptr HttpClientObj](client).shutdown(false)
 
-proc abort*(client: Relay) =
-  if client != nil: cast[ptr RelayObj](client).shutdown(true)
+proc abort*(client: HttpClient) =
+  if client != nil: cast[ptr HttpClientObj](client).shutdown(true)
 
-proc hasRequests*(client: Relay): bool =
+proc hasRequests*(client: HttpClient): bool =
   acquire(client.lock)
   result = client.queue.len > 0 or client.inFlight.len > 0
   release(client.lock)
 
-proc numInFlight*(client: Relay): int =
+proc numInFlight*(client: HttpClient): int =
   acquire(client.lock)
   result = client.inFlight.len
   release(client.lock)
 
-proc queueLen*(client: Relay): int =
+proc queueLen*(client: HttpClient): int =
   acquire(client.lock)
   result = client.queue.len
   release(client.lock)
 
-proc clearQueue*(client: Relay) =
+proc clearQueue*(client: HttpClient) =
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    cast[ptr RelayObj](client).storeCompletionLocked(
+    cast[ptr HttpClientObj](client).storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
-proc clientIsBusy(client: Relay): bool =
+proc clientIsBusy(client: HttpClient): bool =
   acquire(client.lock)
   result =
     client.queue.len > 0 or
@@ -451,7 +459,7 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
     easy: default(Easy)
   )
 
-proc startRequests*(client: Relay; batch: var RequestBatch) =
+proc startRequests*(client: HttpClient; batch: var RequestBatch) =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
@@ -465,7 +473,7 @@ proc startRequests*(client: Relay; batch: var RequestBatch) =
   client.multi.wakeup()
   release(client.lock)
 
-proc startRequest*(client: Relay; request: sink RequestSpec) =
+proc startRequest*(client: HttpClient; request: sink RequestSpec) =
   acquire(client.lock)
   if client.closed or client.closeRequested:
     release(client.lock)
@@ -477,7 +485,7 @@ proc startRequest*(client: Relay; request: sink RequestSpec) =
   client.multi.wakeup()
   release(client.lock)
 
-proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
+proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
   acquire(client.lock)
   while client.readyResults.len == 0 and client.workerRunning:
     wait(client.resultCond, client.lock)
@@ -489,7 +497,7 @@ proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
     result = false
   release(client.lock)
 
-proc pollForResult*(client: Relay; outResult: var RequestResult): bool =
+proc pollForResult*(client: HttpClient; outResult: var RequestResult): bool =
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
@@ -498,7 +506,7 @@ proc pollForResult*(client: Relay; outResult: var RequestResult): bool =
     result = false
   release(client.lock)
 
-proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults =
+proc makeRequests*(client: HttpClient; batch: var RequestBatch): RequestResults =
   if client.clientIsBusy():
     raise newException(IOError, "makeRequests requires an idle client")
 
@@ -511,7 +519,7 @@ proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults =
       raise newException(IOError, "client stopped before all responses arrived")
     result.add(item)
 
-proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult =
+proc makeRequest*(client: HttpClient; request: sink RequestSpec): RequestResult =
   if client.clientIsBusy():
     raise newException(IOError, "makeRequest requires an idle client")
 
@@ -519,7 +527,7 @@ proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult =
   if not client.waitForResult(result):
     raise newException(IOError, "client stopped before response arrived")
 
-proc makeVerbRequest(client: Relay; verb: HttpVerb; url: sink string;
+proc makeVerbRequest(client: HttpClient; verb: HttpVerb; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult {.inline.} =
   client.makeRequest(RequestSpec(
@@ -531,47 +539,47 @@ proc makeVerbRequest(client: Relay; verb: HttpVerb; url: sink string;
     timeoutMs: timeoutMs
   ))
 
-proc get*(client: Relay; url: sink string;
+proc get*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvGet, url, headers, "", requestId, timeoutMs)
 
-proc post*(client: Relay; url: sink string;
+proc post*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvPost, url, headers, body, requestId, timeoutMs)
 
-proc put*(client: Relay; url: sink string;
+proc put*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvPut, url, headers, body, requestId, timeoutMs)
 
-proc patch*(client: Relay; url: sink string;
+proc patch*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvPatch, url, headers, body, requestId, timeoutMs)
 
-proc delete*(client: Relay; url: sink string;
+proc delete*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvDelete, url, headers, "", requestId, timeoutMs)
 
-proc head*(client: Relay; url: sink string;
+proc head*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvHead, url, headers, "", requestId, timeoutMs)
 
-proc options*(client: Relay; url: sink string;
+proc options*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvOptions, url, headers, "", requestId, timeoutMs)
 
-proc connect*(client: Relay; url: sink string;
+proc connect*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvConnect, url, headers, "", requestId, timeoutMs)
 
-proc trace*(client: Relay; url: sink string;
+proc trace*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvTrace, url, headers, "", requestId, timeoutMs)
