@@ -180,20 +180,22 @@ proc publish(client: var WebSocketClientObj; conn: Connection) =
     if conn.mailbox.events.len >= client.maxEvents or
         conn.incoming.data.len > client.maxQueuedBytes - conn.mailbox.bytes:
       raise newException(IOError, "WebSocket event queue overflow")
-    conn.mailbox.bytes += conn.incoming.data.len
+    inc conn.mailbox.bytes, conn.incoming.data.len
     conn.mailbox.events.addLast(WebSocketEvent(connectionId: conn.mailbox.id,
       kind: weMessage, message: move conn.incoming))
     broadcast(client.resultCond)
   finally:
     release(client.lock)
 
-proc readFrames(client: var WebSocketClientObj; conn: Connection) =
+proc readFrames(client: var WebSocketClientObj; conn: Connection): CURLcode =
+  result = CURLE_OK
   var buffer: array[16 * 1024, char]
   for turn in 0..<4:
     if cfPeerClosed in conn.flags: break
     var received: csize_t
     var frame: tuple[flags: cuint, bytesLeft: curl_off_t]
-    if not conn.easy.recvFrame(addr buffer[0], buffer.len.csize_t, received, frame): break
+    result = conn.easy.recvFrame(addr buffer[0], buffer.len.csize_t, received, frame)
+    if result != CURLE_OK: break
     let count = received.int # libcurl writes at most buffer.len bytes.
     let flags = frame.flags
     if (flags and (CURLWS_TEXT or CURLWS_BINARY)) != 0:
@@ -241,14 +243,13 @@ proc readFrames(client: var WebSocketClientObj; conn: Connection) =
     elif (flags and CURLWS_PONG) == 0:
       raise newException(IOError, "Unsupported WebSocket frame")
 
-proc writeFrame(conn: Connection; data: string; flags: cuint; offset: var int): bool =
+proc writeFrame(conn: Connection; data: string; flags: cuint; offset: var int): CURLcode =
   var sent: csize_t
   let buffer = if offset == data.len: nil else: cast[pointer](addr data[offset])
-  let ready = conn.easy.sendFrame(buffer, (data.len - offset).csize_t, sent, 0, flags)
-  offset += sent.int
-  result = ready and offset == data.len
+  result = conn.easy.sendFrame(buffer, (data.len - offset).csize_t, sent, 0, flags)
+  inc offset, sent.int
 
-proc writeData(conn: Connection; cmd: Command): bool =
+proc writeData(conn: Connection; cmd: Command): CURLcode =
   # Explicit partial-frame mode bounds masking/copy work on every worker turn.
   let data = cmd.message.data
   let count = min(16 * 1024, data.len - conn.offset)
@@ -257,22 +258,25 @@ proc writeData(conn: Connection; cmd: Command): bool =
   let flags = if data.len == 0: kind else: kind or CURLWS_OFFSET
   let size = if cfFrameStarted notin conn.flags: data.len.int64 else: 0'i64
   var sent: csize_t
-  let ready = conn.easy.sendFrame(buffer, count.csize_t, sent, size, flags)
+  result = conn.easy.sendFrame(buffer, count.csize_t, sent, size, flags)
   conn.flags.incl(cfFrameStarted)
-  conn.offset += sent.int
-  result = ready and conn.offset == data.len
+  inc conn.offset, sent.int
 
-proc writeFrames(client: var WebSocketClientObj; conn: Connection) =
+proc writeFrames(client: var WebSocketClientObj; conn: Connection): CURLcode =
   # Finish either partially sent frame before switching between data/control queues.
+  result = CURLE_OK
   if conn.sends.len > 0 and conn.controlOffset == 0 and
       (cfFrameStarted in conn.flags or (conn.state != cnClosing and conn.controls.len == 0)):
-    if conn.writeData(conn.sends.peekFirst()):
+    let cmd {.cursor.} = conn.sends.peekFirst()
+    result = conn.writeData(cmd)
+    if result == CURLE_OK and conn.offset == cmd.message.data.len:
       client.completion(conn.sends.popFirst())
       conn.offset = 0
       conn.flags.excl(cfFrameStarted)
-  if cfFrameStarted notin conn.flags and conn.controls.len > 0:
+  if result == CURLE_OK and cfFrameStarted notin conn.flags and conn.controls.len > 0:
     let control {.cursor.} = conn.controls.peekFirst()
-    if conn.writeFrame(control.data, control.flags, conn.controlOffset):
+    result = conn.writeFrame(control.data, control.flags, conn.controlOffset)
+    if result == CURLE_OK and conn.controlOffset == control.data.len:
       if control.flags == CURLWS_CLOSE: conn.flags.incl(cfCloseSent)
       discard conn.controls.popFirst()
       conn.controlOffset = 0
@@ -361,9 +365,13 @@ proc serviceConnection(client: var WebSocketClientObj; conn: Connection;
       if expired:
         client.finish(conn, newTransportError(teTimeout, "WebSocket send timed out"))
       else:
-        client.readFrames(conn)
-        client.writeFrames(conn)
-        if conn.state == cnClosing and ({cfPeerClosed, cfCloseSent} <= conn.flags or
+        var code = client.readFrames(conn)
+        if code == CURLE_OK or code == CURLE_AGAIN:
+          code = client.writeFrames(conn)
+        if code != CURLE_OK and code != CURLE_AGAIN:
+          client.finish(conn, newTransportError(classifyTransportError(code),
+            "WebSocket transfer failed: " & $curl_easy_strerror(code), code.int))
+        elif conn.state == cnClosing and ({cfPeerClosed, cfCloseSent} <= conn.flags or
             getMonoTime() >= conn.closeDeadline):
           let reason = if cfPeerClosed in conn.flags:
             "Peer closed the WebSocket connection"
