@@ -16,6 +16,13 @@ type
     message*: string
     curlCode*: int
 
+proc isRetryable*(kind: TransportErrorKind): bool {.inline.} =
+  ## Returns true for timeouts, network, DNS, TLS, and internal errors.
+  case kind
+  of teTimeout, teNetwork, teDns, teTls, teInternal:
+    result = true
+  of teNone, teCanceled, teProtocol:
+    result = false
 
 proc noTransportError*(): TransportError {.inline.} =
   TransportError(kind: teNone, message: "", curlCode: 0)

@@ -43,5 +43,3 @@ proc curl_ws_recv*(curl: CURL; buffer: pointer; buflen: csize_t; received: ptr c
 proc curl_ws_send*(curl: CURL; buffer: pointer; buflen: csize_t; sent: ptr csize_t;
     fragsize: curl_off_t; flags: cuint): CURLcode
 {.pop.}
-
-proc curl_multi_wakeup*(multi: CURLM): CURLMcode {.importc, cdecl, header: "<curl/multi.h>".}

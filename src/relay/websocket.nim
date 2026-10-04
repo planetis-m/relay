@@ -109,14 +109,6 @@ proc `==`*(a, b: OperationId): bool {.borrow.}
 proc handle(conn: Connection): CURL {.inline.} =
   cast[CURL](conn.easy.handleKey())
 
-proc checkCurl(code: CURLcode; context: string) =
-  if code != CURLE_OK:
-    raise newException(IOError, context & ": " & $curl_easy_strerror(code))
-
-proc checkMulti(code: CURLMcode; context: string) =
-  if code != CURLM_OK:
-    raise newException(IOError, context & ": " & $curl_multi_strerror(code))
-
 proc timeout(client: ptr WebSocketServiceObj; timeoutMs: int): int =
   if timeoutMs > 0: min(timeoutMs, cint.high.int) else: client.defaultTimeoutMs
 
@@ -125,8 +117,7 @@ proc mailbox(client: ptr WebSocketServiceObj; id: ConnectionId): Mailbox =
     if item.id == id: return item
 
 proc wake(client: ptr WebSocketServiceObj) =
-  if client.wakeHandle != nil:
-    discard curl_multi_wakeup(client.wakeHandle)
+  client.wakeHandle.wakeup()
 
 proc completion(client: ptr WebSocketServiceObj; cmd: Command; error = TransportError()) =
   acquire(client.lock)
