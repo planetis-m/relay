@@ -47,8 +47,7 @@ proc main() =
         when not defined(danger):
           doAssertRaises AssertionDefect: client.connect(url)
         when not defined(danger):
-          for invalid in ["\xff", repeat('x', 9)]:
-            doAssertRaises AssertionDefect: client.send(invalid)
+          doAssertRaises AssertionDefect: client.send(repeat('x', 9))
         client.send("echo")
         doAssert client.receive() == "echo"
         doAssertRaises TimeoutError: discard client.receive(timeoutMs = 30)

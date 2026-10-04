@@ -54,7 +54,8 @@ Check `error.kind == teNone` for success; peer/local close reports
 per connection. Submission and retrieval are synchronized while the worker is active.
 Submission, cancellation and connection close require an open client. For both APIs,
 URLs must contain no NUL or fragments. Sent messages must fit `maxMessageBytes`, and
-text must be valid UTF-8. All receivers must be non-nil except for `close` and `abort`.
+text must be valid UTF-8; sends do not validate it. All receivers must be non-nil
+except for `close` and `abort`.
 These are caller preconditions; assertions are disabled in danger builds.
 Retrieval returns false when no item is available after shutdown; an empty poll also
 returns false. Event waits return false on timeout or unknown/drained IDs.

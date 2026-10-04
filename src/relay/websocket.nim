@@ -410,7 +410,8 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
           inc kept
       connections.setLen(kept)
       acquire(client.lock)
-      broadcast(client.resultCond) # Timed consumer waits recheck their monotonic deadline.
+      # Timed consumers recheck deadlines here until std/locks supports timed waits.
+      broadcast(client.resultCond)
       let done = client.state in {csStopping, csAborting} and
         connections.len == 0 and client.commands.len == 0
       release(client.lock)
@@ -535,7 +536,6 @@ proc startSend*(client: WebSocketClient; id: ConnectionId;
   ## Requires data within maxMessageBytes and UTF-8 for text; refused admission raises IOError.
   assert not client.closed, "WebSocket client is closed"
   assert message.data.len <= client.maxMessageBytes, "WebSocket message exceeds byte limit"
-  assert message.kind != wmText or message.data.validateUtf8() < 0, "Invalid WebSocket UTF-8 text"
   acquire(client.lock)
   try:
     result = client[].enqueue(Command(kind: wcSend, connectionId: id,
