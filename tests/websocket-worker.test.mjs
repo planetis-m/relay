@@ -97,7 +97,7 @@ function execute(url, mode, ca = '') {
     });
   });
 }
-for (const mode of ['http-first', 'socket-first', 'text-client', 'idle', 'pressure', 'cancel-connect',
+for (const mode of ['http-first', 'socket-first', 'text-client', 'text-failure', 'idle', 'pressure', 'cancel-connect',
   'cancel-send', 'queued-deadline', 'cancel-receive', 'failure', 'shutdown-full',
   'bytes', 'duplex', 'partial', 'idle-close', 'abort-full', 'shutdown-scope', 'slow-peer']) {
   test(`separate WebSocket worker: ${mode}`, async () => {

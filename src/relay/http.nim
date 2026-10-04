@@ -178,10 +178,11 @@ proc runEasyLoop(client: var HttpClientObj): bool =
     discard client.multi.poll(MultiWaitMaxMs)
   except IOError:
     let error = newTransportError(teInternal, getCurrentExceptionMsg())
-    withLock client.lock:
-      client.flushFailedLocked(error)
-      client.state = csAborting
-      signal(client.wakeCond)
+    acquire(client.lock)
+    client.flushFailedLocked(error)
+    client.state = csAborting
+    signal(client.wakeCond)
+    release(client.lock)
     result = false
 
 proc processDoneMessages(client: var HttpClientObj) =
@@ -197,9 +198,10 @@ proc processDoneMessages(client: var HttpClientObj) =
 
       if request != nil:
         let completion = completionFromCurl(client, request, msg.data.result)
-        withLock client.lock:
-          client.availableEasy.add(move request.easy)
-          client.storeCompletionLocked(completion)
+        acquire(client.lock)
+        client.availableEasy.add(move request.easy)
+        client.storeCompletionLocked(completion)
+        release(client.lock)
 
 proc dispatchQueuedRequests(client: var HttpClientObj) =
   var done = false
@@ -224,12 +226,13 @@ proc dispatchQueuedRequests(client: var HttpClientObj) =
       except CatchableError:
         error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-      withLock client.lock:
-        if error.kind == teNone:
-          client.inFlight[handleKey(request.easy)] = request
-        else:
-          client.availableEasy.add(move request.easy)
-          client.storeCompletionLocked((newResponse(request), error))
+      acquire(client.lock)
+      if error.kind == teNone:
+        client.inFlight[handleKey(request.easy)] = request
+      else:
+        client.availableEasy.add(move request.easy)
+        client.storeCompletionLocked((newResponse(request), error))
+      release(client.lock)
 
 proc waitForWorkOrClose(client: var HttpClientObj): bool =
   result = true
@@ -254,8 +257,9 @@ proc workerMain(client: ptr HttpClientObj) {.thread, raises: [].} =
     release(client.lock)
 
     if shouldAbort:
-      withLock client.lock:
-        client[].flushFailedLocked(newTransportError(teCanceled, "Canceled in abort"))
+      acquire(client.lock)
+      client[].flushFailedLocked(newTransportError(teCanceled, "Canceled in abort"))
+      release(client.lock)
       break
 
     if hasInflight:
@@ -284,21 +288,24 @@ proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     for _ in 0..<max(1, maxInFlight):
       client.availableEasy.add(initEasy())
     createThread(client.thread, workerMain, addr client[])
-    result = client
-  finally:
-    if result == nil:
-      reset(client.availableEasy)
-      reset(client.multi)
-      cleanupCurl()
-      deinitCond(client.resultCond)
-      deinitCond(client.wakeCond)
-      deinitLock(client.lock)
+  except Exception:
+    reset(client.availableEasy)
+    reset(client.multi)
+    cleanupCurl()
+    deinitCond(client.resultCond)
+    deinitCond(client.wakeCond)
+    deinitLock(client.lock)
+    raise
+  result = client
 
-proc shutdown(client: var HttpClientObj; aborting: bool) =
+proc shutdown(client: var HttpClientObj; aborting: static[bool]) =
   if not client.closed:
     acquire(client.lock)
     if client.state in {csRunning, csStopping}:
-      client.state = if aborting: csAborting else: csStopping
+      when aborting:
+        client.state = csAborting
+      else:
+        client.state = csStopping
     signal(client.wakeCond)
     client.multi.wakeup()
     release(client.lock)
@@ -372,7 +379,8 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
 proc startRequests*(client: HttpClient; batch: var RequestBatch) =
   if client.closed:
     raise newException(IOError, "client is closed")
-  withLock client.lock:
+  acquire(client.lock)
+  try:
     if client.state != csRunning:
       raise newException(IOError, "client is closed")
 
@@ -382,11 +390,14 @@ proc startRequests*(client: HttpClient; batch: var RequestBatch) =
 
     signal(client.wakeCond)
     client.multi.wakeup()
+  finally:
+    release(client.lock)
 
 proc startRequest*(client: HttpClient; request: sink RequestSpec) =
   if client.closed:
     raise newException(IOError, "client is closed")
-  withLock client.lock:
+  acquire(client.lock)
+  try:
     if client.state != csRunning:
       raise newException(IOError, "client is closed")
 
@@ -394,6 +405,8 @@ proc startRequest*(client: HttpClient; request: sink RequestSpec) =
 
     signal(client.wakeCond)
     client.multi.wakeup()
+  finally:
+    release(client.lock)
 
 proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
   if client.closed: return false

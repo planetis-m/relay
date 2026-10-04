@@ -1,145 +1,88 @@
-# Persistent WebSockets
+# WebSockets
 
-`relay/websocket` transports messages without JSON or application callbacks. One
-`WebSocketClient` owns one worker for multiple connections; HTTP retains its separate
-worker. Build with `--threads:on --mm:atomicArc` and a WebSocket-enabled libcurl 8.14+
-with matching development headers and thread-safe global initialization. These are
-build requirements; constructors do not probe versions or memory models.
-Linux/libcurl 8.18.0 is verified.
+Import `relay/websocket`. Use `WebSocket` for blocking text messages or
+`WebSocketClient` for multiple connections with text and binary messages.
+Both can run alongside `HttpClient`. See the [README example](README.md#persistent-websockets).
 
-## Minimal public API
+Build with `--threads:on --mm:atomicArc` and a thread-safe, WebSocket-enabled
+libcurl 8.14+ with matching headers.
 
-| API | Contract |
+## Blocking text
+
+```nim
+proc newWebSocket*(defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
+    bypassProxy = false): WebSocket
+proc connect*(client: WebSocket; url: string; timeoutMs = 0)
+proc send*(client: WebSocket; text: string; timeoutMs = 0)
+proc receive*(client: WebSocket; timeoutMs = 0): string
+proc close*(client: WebSocket)
+```
+
+Invalid URLs, text, size or repeated connect raise `ValueError` and leave the
+connection usable. Transport/protocol failures raise `IOError`; deadline expiry raises
+`TimeoutError`, an `IOError`. Errors propagate without joining the worker: call `close`
+in `finally`. A receive timeout leaves the connection open. Use one caller per `WebSocket`.
+Connect requires an open client; send/receive require a connected client. These are
+asserted preconditions; assertions are disabled in danger builds.
+
+## Connection worker
+
+```nim
+proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
+    defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
+    maxQueuedBytes = 32 * 1024 * 1024; closeTimeoutMs = 100;
+    bypassProxy = false; proxy = ""; caInfo = ""): WebSocketClient
+```
+
+| Operation | Behavior |
 | --- | --- |
-| `newWebSocketClient(maxConnections = 16, maxCommands = 64, maxEvents = 64, defaultTimeoutMs = 60_000, maxMessageBytes = 32 * 1024 * 1024, maxQueuedBytes = 32 * 1024 * 1024, closeTimeoutMs = 100, bypassProxy = false, proxy = "", caInfo = "")` | Starts one worker; nonpositive bounds clamp to one |
-| `startConnect(url: sink string, timeoutMs = 0)` | Returns distinct connection and operation IDs |
-| `startSend(id, message: sink WebSocketMessage, timeoutMs = 0)` | Returns an operation ID; use after successful connect completion |
-| `waitForResult(item: var WebSocketResult)` / `pollForResult(item)` | Completion order, correlated by operation ID; false after worker stops and results drain |
-| `waitForEvent(id, item: var WebSocketEvent, timeoutMs = 0)` / `pollForEvent(id, item)` | Per-connection ordered messages, then one terminal event; false on wait timeout or unknown/drained ID |
-| `cancel(id)` | Immediately requests cancellation, bypassing command capacity |
-| `closeConnection(id)` | Requests a bounded close handshake, bypassing command capacity |
-| `close()` / `abort()` | Join after bounded handshakes / cancellation; retained events and results remain drainable |
+| `startConnect(url, timeoutMs = 0)` | Returns connection and operation IDs |
+| `startSend(id, message, timeoutMs = 0)` | Returns an operation ID; use after successful connect completion |
+| `waitForResult(item)` / `pollForResult(item)` | Completions in completion order; wait blocks, poll returns immediately |
+| `waitForEvent(id, item, timeoutMs = 0)` / `pollForEvent(id, item)` | Ordered messages, then one terminal event; wait blocks up to its timeout, poll returns immediately |
+| `cancel(id)` / `closeConnection(id)` | Request cancellation / a bounded close handshake without waiting |
+| `close()` / `abort()` | Join after bounded close handshakes / immediate cancellation |
 
-`WebSocketMessage` has `kind: wmText | wmBinary` and owned `data: string` (arbitrary
-bytes for binary). `WebSocketResult` has `connectionId`, `operationId` and Relay's
-`TransportError`. `WebSocketEvent` has `connectionId`, `kind: weMessage | weClosed`,
-`message` and `error`. Peer/local close is a terminal cancellation reason; receive
-and protocol failures have an explicit error. Accepted operations complete exactly
-once; cancellation does not erase results. There are no retry/reconnect semantics.
+- `WebSocketMessage`: `kind` (`wmText` or `wmBinary`) and owned `data: string`.
+- `WebSocketResult`: `connectionId`, `operationId` and `error: TransportError`.
+- `WebSocketEvent`: `connectionId`, `kind` (`weMessage` or `weClosed`), `message` and `error`.
 
-Submission/retrieval is synchronized while the worker is active. Use one result
-consumer and one event consumer per connection to preserve application ordering.
-Lifecycle calls must run on the creating thread after other callers finish, matching
-HttpClient's explicit ownership contract. Aliases share close state. Call `close` or
-`abort` in `try/finally` before releasing the final owner; destruction does not stop
-workers. Worker threads borrow owner pointers and do not retain their own owner.
-After shutdown, drain retained WebSocket results/events on the creating thread.
+Each accepted operation completes once. Check `error.kind == teNone` for success;
+peer/local close reports `teCanceled`. Use one result consumer and one event consumer
+per connection. Submission and retrieval are synchronized while the worker is active.
+Retrieval returns false when no item is available after shutdown; an empty poll also
+returns false. Event waits return false on timeout or unknown/drained IDs.
 
-Both clients keep fields directly on their owner, with compiler-generated field
-cleanup. A private enum tracks the worker (running, stopping, aborting, stopped);
-an owner-only `closed` flag records joining and release of synchronization. There
-are no resource sets, custom client destructors or nested data objects. Ordinary
-mutable helpers borrow the object through `var`; pointers are used at thread entry.
-Both constructors initialize curl and create their `Multi` before starting the
-worker, and clean up partial initialization on failure. Explicit shutdown wakes and
-joins the worker before releasing curl handles, the curl initialization reference,
-and synchronization. HTTP clears its queues; WebSocket retains results/events and
-drains them without locks after shutdown.
-The WebSocket worker uses `Easy` frame operations from `curl_wrap`.
-Each worker connection has a connecting/open/closing/finished lifecycle enum.
-Independent attachment, close-handshake and partial-frame facts use a private flag set.
+## Limits, timeouts and ownership
 
-The text-only `newWebSocket(defaultTimeoutMs = 60_000, maxMessageBytes = 32 * 1024 * 1024,
-bypassProxy = false)` convenience owner exposes blocking `connect`, `send`, `receive`
-and `close`, using one client/connection. It raises `TimeoutError` (an `IOError`) for
-deadline expiry and `IOError` for transport/protocol errors, closing on those failures.
-Invalid caller URLs/text/size or repeated connect raise `ValueError` and preserve the
-existing connection. This convenience API has one caller and is not reentrant.
+- `maxCommands` counts queued/active operations and undrained results. Full admission
+  raises `IOError` without accepting work. Consume results to release capacity.
+- `maxConnections` includes closed connections until their terminal events are consumed.
+- `maxMessageBytes` bounds a message; `maxEvents` and `maxQueuedBytes` bound each event
+  queue. Overflow closes that connection, preserving queued messages before its error.
+- Nonpositive constructor limits clamp to one. Nonpositive timeout overrides use the default.
+  Connect/send deadlines include queue time; an expired send closes its connection.
+- An event-wait timeout returns false and leaves the worker connection open.
+  Blocking `WebSocket.receive` raises `TimeoutError` and leaves the connection open.
+- Always call `close` or `abort` before releasing the final owner, using `try/finally`.
+  Shutdown belongs to the creating thread after other callers finish. Repeated calls
+  are safe; destruction does not stop workers. Drain retained worker results/events
+  on the creating thread after shutdown.
 
-## Ownership, limits and deadlines
+TLS verifies trust and hostname. `proxy` overrides curl's environment proxy;
+`bypassProxy` disables it. `caInfo` selects a CA file. Ping/close handling and UTF-8
+validation are automatic. Redirects, URL credentials, extensions and subprotocols
+are refused. Reconnect, compression, custom headers and application callbacks are
+not provided.
 
-During worker execution, only the worker performs I/O and manages easy handles,
-headers, upgrade state, partial writes and reassembly buffers. The owner creates
-`Multi` before starting the worker and releases it after joining. The sole concurrent
-cross-thread curl call is the documented `curl_multi_wakeup` operation, under the
-owner lock while its handle remains alive.
-Commands and payloads transfer through locked queues with atomic ARC. No caller buffer
-is borrowed by the worker. Results/events transfer back through the same boundary.
-The worker never calls an application callback.
+## Checks
 
-`maxCommands` bounds queued commands + active operations + undrained results.
-The locked `outstanding` counter increases on admission and decreases only
-when the consumer retrieves a result. Completing an operation does not release its
-capacity until that result is consumed. Full
-admission raises `IOError` without accepting an operation. Payloads are bounded by
-`maxMessageBytes`, hence admitted command payload storage is at most their product.
-`maxConnections` includes terminal mailboxes until their terminal events are drained.
-Each mailbox has at most `maxEvents` messages and `maxQueuedBytes` payload bytes plus
-one reserved terminal error. Overflow fails that connection immediately, preserves
-already accepted messages and reports the overflow after them. It cannot block control
-traffic on other connections. Partial incoming data is capped by `maxMessageBytes`.
-Each connection has at most eight pending control replies; control flood fails it.
-Final owner destruction discards intentionally abandoned retained results/events.
+```sh
+sh tests/verify-websocket.sh
+```
 
-Connect/send deadlines start at submission and include queue time. Any expired send
-fails the connection, including a short deadline queued behind a blocked long send.
-Nonpositive overrides use `defaultTimeoutMs`; positive timeouts clamp to `cint.high`.
-An event wait has its own monotonic deadline and does not close a general connection
-on timeout. The text convenience owner closes on receive timeout. Progress, fragments
-and ping traffic never renew deadlines. The worker bounds each turn to four 16 KiB
-receive chunks, one 16 KiB outgoing data chunk, and one control write per connection.
-Polling revisits deadlines within 20 ms plus scheduler/curl-call time; commands and
-cancellation wake polling immediately. Buffered frames are revisited on subsequent
-turns even when kernel readability does not reflect curl's buffered data.
-
-Close completes a handshake when the peer answers, otherwise tears down at
-`closeTimeoutMs`. A partly sent frame must finish before a control frame can be sent;
-the close deadline still bounds teardown. Abort/cancel discard partial I/O and do not
-wait for peers or consumer capacity. Waiters are broadcast on completions, terminal
-state, shutdown and deadline ticks. Handles remain attached to their multi owner
-through connect-only use, then are removed/destroyed before global cleanup.
-
-## Protocol and shared mechanics
-
-TLS verifies trust and hostname. Proxy defaults use curl's environment; `proxy` selects
-an explicit proxy and `bypassProxy` takes precedence. `caInfo` selects a CA file without
-disabling TLS checks. Redirects, credentials, fragments, unsolicited extensions and
-subprotocols are refused. A unique `Sec-WebSocket-Accept` is checked against the client
-nonce. Text UTF-8 is validated after fragment reassembly; binary is represented
-explicitly. Ping payloads are echoed even while callers are idle. Close payload length,
-code and reason UTF-8 are validated. Libcurl owns masking and wire framing.
-
-HTTP and WebSockets share one curl binding and wrapper. Each client pairs global
-initialization with cleanup after releasing its handles; libcurl supplies the counting
-and synchronization. There is no Relay global lock or user counter. They also share
-transport error construction/classification/retry predicates and the wrapper wakeup primitive.
-Curl easy/multi status checks are defined once in `curl_wrap` and used by both workers. Easy's move hook
-clears moved-from storage before moving its error buffer; failed slist append preserves
-the prior owner. HTTP uses `HttpClient`/`newHttpClient`; the old names are removed.
-HTTP public request APIs/defaults remain compatible. HTTP's queues
-retain their previous behavior; WebSocket limits do not impose a new HTTP queue policy.
-No generic executor/worker framework is introduced.
-
-Official curl contracts consulted: [connect-only lifetime](https://curl.se/libcurl/c/CURLOPT_CONNECT_ONLY.html),
-[partial sends](https://curl.se/libcurl/c/curl_ws_send.html),
-[receive metadata and fragments](https://curl.se/libcurl/c/curl_ws_recv.html),
-[wakeup](https://curl.se/libcurl/c/curl_multi_wakeup.html) and
-[global initialization](https://curl.se/libcurl/c/curl_global_init.html).
-Declarations are verified against supported curl headers and C ABI probes.
-
-## Verification and deliberate limits
-
-The standalone `tests/verify-websocket.sh` runs unit/ABI/ownership contracts and 19
-independent loopback worker groups in debug/release/danger. Fixtures cover two sockets
-plus HTTP, independent shutdown in both orders, idle ping/close, fragments/control
-traffic during sends, resumed writes, blocked-peer fairness, binary, payload mutation, count/byte queue
-pressure, queue-time deadlines, connect/send/receive cancellation, full-queue shutdown,
-failure recovery, aliases/explicit scope shutdown, synchronous text input errors/timeout
-and trusted/untrusted/hostname WSS.
-
-No compression, subprotocol negotiation, configurable request headers, authentication,
-reconnect, application callbacks, configurable close codes or initiated heartbeat API
-is supplied. Incoming ping/close handling is supported. Proxy configuration is exposed;
-an independent proxy server/interoperability matrix is not verified. Other operating
-systems, other supported curl versions, allocation/thread-start fault injection and
-unusual TLS backends remain unverified. Correctness fixtures are not benchmarks.
+Uses local fixtures and requires Node.js and OpenSSL as development tools.
+Linux/libcurl 8.18.0 is verified; other platforms/curl versions and proxy interoperability
+remain unverified. `nim asan tests/ci.nims` covers ownership and curl initialization faults.
+Adding `-d:threadInitFault` when compiling `tests/test_constructor_rollback.nim` also injects
+thread creation failure; Nim 2.3.1 leaks runtime thread storage on that path.

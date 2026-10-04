@@ -76,18 +76,20 @@ proc setOpt*[T](easy: Easy; option: CURLoption; value: T) =
     check(code, "curl_easy_setopt(" & $cint(option) & ") failed")
 
 proc initEasy*(): Easy =
-  result = Easy(raw: curl_easy_init(), errorBuf: newString(256))
-  if result.raw == nil:
+  var easy = Easy(raw: curl_easy_init(), errorBuf: newString(256))
+  if easy.raw == nil:
     raise newException(IOError, "curl_easy_init failed")
-  result.setOpt(CURLOPT_ERRORBUFFER, result.errorBuf.cstring)
-  result.setOpt(CURLOPT_NOSIGNAL, clong(1))
+  easy.setOpt(CURLOPT_ERRORBUFFER, easy.errorBuf.cstring)
+  easy.setOpt(CURLOPT_NOSIGNAL, clong(1))
+  result = easy
 
 proc initMulti*(): Multi =
-  result = Multi(raw: curl_multi_init())
-  if result.raw == nil:
+  var multi = Multi(raw: curl_multi_init())
+  if multi.raw == nil:
     raise newException(IOError, "curl_multi_init failed")
-  check(curl_multi_setopt(result.raw, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX),
+  check(curl_multi_setopt(multi.raw, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX),
     "CURLMOPT_PIPELINING failed")
+  result = multi
 
 proc initCurl*() =
   ## Acquire one libcurl initialization reference using the supported thread-safe build.
