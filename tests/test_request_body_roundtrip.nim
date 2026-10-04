@@ -1,4 +1,4 @@
-import relay
+import relay/http
 import std/[asynchttpserver, asyncdispatch, httpcore, locks, net]
 
 type
@@ -27,7 +27,7 @@ proc teardownDispatcher() =
       poll(0)
       inc spins
     setGlobalDispatcher(nil)
-  except:
+  except Exception: # poll dispatches callbacks with the base Exception effect.
     discard
 
 proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
@@ -79,7 +79,7 @@ proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
 
   try:
     waitFor runServer()
-  except Exception:
+  except Exception: # waitFor exposes the base Exception effect.
     acquire(server.lock)
     server.startError = getCurrentExceptionMsg()
     if not server.ready:
@@ -139,50 +139,51 @@ proc testUrl(server: TestServer): string =
 
 proc main =
   let server = startTestServer(expectedCount = 4)
-  defer:
+  try:
+    let client = newHttpClient(maxInFlight = 1, defaultTimeoutMs = 2_000, maxRedirects = 5)
+    try:
+      let url = testUrl(server)
+
+      let postResult = client.post(url, body = "post-body", requestId = 1, timeoutMs = 2_000)
+      doAssert postResult.error.kind == teNone
+      doAssert postResult.response.code == Http200
+
+      let postBodyWithHeaders = """{"field":"value","count":1}"""
+      var headers = emptyHttpHeaders()
+      headers["Accept"] = "application/test-response"
+      headers["Content-Type"] = "application/test-request"
+      let headerPostResult = client.post(
+        url, headers, body = postBodyWithHeaders, requestId = 2, timeoutMs = 2_000)
+      doAssert headerPostResult.error.kind == teNone
+      doAssert headerPostResult.response.code == Http200
+
+      let putResult = client.put(url, body = "put-body", requestId = 3, timeoutMs = 2_000)
+      doAssert putResult.error.kind == teNone
+      doAssert putResult.response.code == Http200
+
+      let patchResult = client.patch(url, body = "patch-body", requestId = 4, timeoutMs = 2_000)
+      doAssert patchResult.error.kind == teNone
+      doAssert patchResult.response.code == Http200
+
+      acquire(server.lock)
+      let captured = server.captured
+      release(server.lock)
+
+      doAssert captured.len == 4
+      doAssert captured[0].reqMethod == HttpPost
+      doAssert captured[0].body == "post-body"
+      doAssert captured[1].reqMethod == HttpPost
+      doAssert captured[1].contentType == "application/test-request"
+      doAssert captured[1].accept == "application/test-response"
+      doAssert captured[1].body == postBodyWithHeaders
+      doAssert captured[2].reqMethod == HttpPut
+      doAssert captured[2].body == "put-body"
+      doAssert captured[3].reqMethod == HttpPatch
+      doAssert captured[3].body == "patch-body"
+    finally:
+      client.close()
+  finally:
     stopTestServer(server)
-
-  let client = newRelay(maxInFlight = 1, defaultTimeoutMs = 2_000, maxRedirects = 5)
-  defer: client.close()
-
-  let url = testUrl(server)
-
-  let postResult = client.post(url, body = "post-body", requestId = 1, timeoutMs = 2_000)
-  doAssert postResult.error.kind == teNone
-  doAssert postResult.response.code == Http200
-
-  let postBodyWithHeaders = """{"field":"value","count":1}"""
-  var headers = emptyHttpHeaders()
-  headers["Accept"] = "application/test-response"
-  headers["Content-Type"] = "application/test-request"
-  let headerPostResult = client.post(
-    url, headers, body = postBodyWithHeaders, requestId = 2, timeoutMs = 2_000)
-  doAssert headerPostResult.error.kind == teNone
-  doAssert headerPostResult.response.code == Http200
-
-  let putResult = client.put(url, body = "put-body", requestId = 3, timeoutMs = 2_000)
-  doAssert putResult.error.kind == teNone
-  doAssert putResult.response.code == Http200
-
-  let patchResult = client.patch(url, body = "patch-body", requestId = 4, timeoutMs = 2_000)
-  doAssert patchResult.error.kind == teNone
-  doAssert patchResult.response.code == Http200
-
-  acquire(server.lock)
-  let captured = server.captured
-  release(server.lock)
-
-  doAssert captured.len == 4
-  doAssert captured[0].reqMethod == HttpPost
-  doAssert captured[0].body == "post-body"
-  doAssert captured[1].reqMethod == HttpPost
-  doAssert captured[1].contentType == "application/test-request"
-  doAssert captured[1].accept == "application/test-response"
-  doAssert captured[1].body == postBodyWithHeaders
-  doAssert captured[2].reqMethod == HttpPut
-  doAssert captured[2].body == "put-body"
-  doAssert captured[3].reqMethod == HttpPatch
-  doAssert captured[3].body == "patch-body"
 
 when isMainModule:
   main()

@@ -1,11 +1,13 @@
+## HTTP request worker, batching and completion-order results.
 import std/[deques, locks, tables]
-import ./relay/bindings/curl
-import ./relay/[http_headers, http_query, http_status, retry, curl_wrap]
+import ./bindings/curl
+import ./[http_headers, http_query, http_status, retry, curl_wrap, transport_errors]
 
 export http_headers
 export http_query
 export http_status
 export retry
+export transport_errors
 
 const
   MultiWaitMaxMs = 250
@@ -22,21 +24,6 @@ type
     hvOptions = "OPTIONS",
     hvConnect = "CONNECT",
     hvTrace = "TRACE"
-
-  TransportErrorKind* = enum
-    teNone,
-    teTimeout,
-    teNetwork,
-    teDns,
-    teTls,
-    teCanceled,
-    teProtocol,
-    teInternal
-
-  TransportError* = object
-    kind*: TransportErrorKind
-    message*: string
-    curlCode*: int
 
   RequestInfo* = object
     verb*: HttpVerb
@@ -76,16 +63,16 @@ type
     easy: Easy
     curlHeaders: Slist
 
-  RelayObj = object
+  ClientState = enum
+    csRunning, csStopping, csAborting, csStopped
+
+  HttpClientObj = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
-    thread: Thread[ptr RelayObj] # break cycle
-    workerRunning: bool
-    closeRequested: bool
-    abortRequested: bool
-    closed: bool
-    maxInFlight: int
+    thread: Thread[ptr HttpClientObj] # break cycle
+    state: ClientState
+    closed: bool # Owner-only: worker joined and synchronization released.
     defaultTimeoutMs: int
     maxRedirects: int
     multi: Multi
@@ -93,63 +80,21 @@ type
     queue: Deque[RequestWrap]
     inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[RequestResult]
-  Relay* = ref RelayObj
+  HttpClient* = ref HttpClientObj
+    ## HTTP request worker with shared lifetime and completion-order results.
 
-proc isRetryable*(kind: TransportErrorKind): bool {.inline.} =
-  ## Returns true for timeouts, network, DNS, TLS, and internal errors.
-  case kind
-  of teTimeout, teNetwork, teDns, teTls, teInternal:
-    result = true
-  of teNone, teCanceled, teProtocol:
-    result = false
-
-proc noTransportError(): TransportError {.inline.} =
-  TransportError(kind: teNone, message: "", curlCode: 0)
-
-proc newTransportError(kind: TransportErrorKind; message: sink string;
-    curlCode = 0): TransportError {.inline.} =
-  TransportError(kind: kind, message: message, curlCode: curlCode)
-
-proc classifyTransportError(curlCode: CURLcode): TransportErrorKind {.inline.} =
-  case curlCode
-  of CURLE_OPERATION_TIMEDOUT:
-    teTimeout
-  of CURLE_COULDNT_RESOLVE_PROXY, CURLE_COULDNT_RESOLVE_HOST:
-    teDns
-  of CURLE_SSL_CONNECT_ERROR, CURLE_PEER_FAILED_VERIFICATION:
-    teTls
-  of CURLE_ABORTED_BY_CALLBACK:
-    teCanceled
-  else:
-    teNetwork
-
-proc bodyWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
+proc appendWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
   let total = int(size * nitems)
   if total <= 0:
     result = 0
   else:
-    let body = cast[ptr string](userdata)
-    if body.isNil:
+    let destination = cast[ptr string](userdata)
+    if destination.isNil:
       result = csize_t(total)
     else:
-      let start = body[].len
-      body[].setLen(start + total)
-      copyMem(addr body[][start], buffer, total)
-      result = csize_t(total)
-
-proc headerWriteCb(buffer: ptr char; size, nitems: csize_t;
-    userdata: pointer): csize_t {.cdecl.} =
-  let total = int(size * nitems)
-  if total <= 0:
-    result = 0
-  else:
-    let headers = cast[ptr string](userdata)
-    if headers.isNil:
-      result = csize_t(total)
-    else:
-      let start = headers[].len
-      headers[].setLen(start + total)
-      copyMem(addr headers[][start], buffer, total)
+      let start = destination[].len
+      destination[].setLen(start + total)
+      copyMem(addr destination[][start], buffer, total)
       result = csize_t(total)
 
 proc newResponse(request: RequestWrap): Response {.inline.} =
@@ -165,11 +110,11 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
     )
   )
 
-proc storeCompletionLocked(client: Relay; item: sink RequestResult) =
+proc storeCompletionLocked(client: var HttpClientObj; item: sink RequestResult) =
   client.readyResults.addLast(item)
   signal(client.resultCond)
 
-proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
+proc configureEasy(client: HttpClientObj; request: RequestWrap; easy: var Easy) =
   easy.reset()
   easy.setUrl(request.url)
   easy.setHttpVersion2Tls()
@@ -179,81 +124,67 @@ proc configureEasy(client: Relay; request: RequestWrap; easy: var Easy) =
   if request.body.len > 0:
     easy.setRequestBody(request.body)
 
-  var headerList: Slist
+  var headerList = Slist()
   for header in request.headers:
     headerList.addHeader(header.name & ": " & header.value)
   request.curlHeaders = headerList
   easy.setHeaders(request.curlHeaders)
 
-  easy.setWriteCallback(bodyWriteCb, cast[pointer](addr request.responseBody))
-  easy.setHeaderCallback(headerWriteCb, cast[pointer](addr request.responseHeadersRaw))
+  easy.setWriteCallback(appendWriteCb, cast[pointer](addr request.responseBody))
+  easy.setHeaderCallback(appendWriteCb, cast[pointer](addr request.responseHeadersRaw))
   easy.setTimeoutMs(if request.timeoutMs > 0: request.timeoutMs else: client.defaultTimeoutMs)
   easy.setConnectTimeoutMs(DefaultConnectTimeoutMs)
   easy.setSslVerify(true, true)
   easy.setAcceptEncoding("gzip, deflate")
   easy.setFollowRedirects(true, client.maxRedirects)
 
-proc completionFromCurl(request: RequestWrap; curlCode: CURLcode;
-    removeError: sink string): RequestResult =
-  result.response = newResponse(request)
-  if removeError.len > 0:
-    result.error = newTransportError(teInternal, removeError)
-  elif curlCode != CURLE_OK:
-    result.error = newTransportError(
-      classifyTransportError(curlCode),
-      "curl transfer failed code=" & $int(curlCode),
-      int(curlCode)
-    )
-  else:
-    try:
+proc completionFromCurl(client: var HttpClientObj; request: RequestWrap;
+    curlCode: CURLcode): RequestResult =
+  result = (newResponse(request), noTransportError())
+  try:
+    client.multi.removeHandle(request.easy)
+    if curlCode != CURLE_OK:
+      result.error = newTransportError(classifyTransportError(curlCode),
+        "curl transfer failed code=" & $int(curlCode), int(curlCode))
+    else:
       result.response.code = HttpCode(request.easy.responseCode())
       let effective = request.easy.effectiveUrl()
       if effective.len > 0:
         result.response.url = effective
       result.response.headers = parseHeaders(request.responseHeadersRaw)
       result.response.body = move request.responseBody
-      result.error = noTransportError()
-    except CatchableError:
-      result.error = newTransportError(teInternal, getCurrentExceptionMsg())
+  except CatchableError:
+    result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
-proc flushCanceledLocked(client: Relay; message: string) =
+proc flushFailedLocked(client: var HttpClientObj; error: TransportError) =
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    client.storeCompletionLocked(
-      (newResponse(queued), newTransportError(teCanceled, message)))
+    client.storeCompletionLocked((newResponse(queued), error))
 
   for req in values(client.inFlight):
     try:
       client.multi.removeHandle(req.easy)
-    except CatchableError:
+    except IOError:
       discard
     client.availableEasy.add(move req.easy)
-    client.storeCompletionLocked(
-      (newResponse(req), newTransportError(teCanceled, message)))
+    client.storeCompletionLocked((newResponse(req), error))
   client.inFlight.clear()
 
-proc runEasyLoop(client: Relay): bool =
+proc runEasyLoop(client: var HttpClientObj): bool =
   result = true
   try:
     discard client.multi.perform()
     discard client.multi.poll(MultiWaitMaxMs)
-  except CatchableError:
-    let loopError = getCurrentExceptionMsg()
+  except IOError:
+    let error = newTransportError(teInternal, getCurrentExceptionMsg())
     acquire(client.lock)
-    while client.queue.len > 0:
-      let queued = client.queue.popFirst()
-      client.storeCompletionLocked(
-        (newResponse(queued), newTransportError(teInternal, loopError)))
-    for req in values(client.inFlight):
-      client.storeCompletionLocked(
-        (newResponse(req), newTransportError(teInternal, loopError)))
-    client.inFlight.clear()
-    client.abortRequested = true
+    client.flushFailedLocked(error)
+    client.state = csAborting
     signal(client.wakeCond)
     release(client.lock)
     result = false
 
-proc processDoneMessages(client: Relay) =
+proc processDoneMessages(client: var HttpClientObj) =
   var msg: CURLMsg
   var msgsInQueue = 0
   while client.multi.tryInfoRead(msg, msgsInQueue):
@@ -265,25 +196,20 @@ proc processDoneMessages(client: Relay) =
       release(client.lock)
 
       if request != nil:
-        var removeError = ""
-        try:
-          client.multi.removeHandle(msg)
-        except CatchableError:
-          removeError = getCurrentExceptionMsg()
-
-        let completion = completionFromCurl(request, msg.data.result, removeError)
+        let completion = completionFromCurl(client, request, msg.data.result)
         acquire(client.lock)
         client.availableEasy.add(move request.easy)
         client.storeCompletionLocked(completion)
         release(client.lock)
 
-proc dispatchQueuedRequests(client: Relay) =
+proc dispatchQueuedRequests(client: var HttpClientObj) =
   var done = false
   while not done:
     var request: RequestWrap
     var easy: Easy
     acquire(client.lock)
-    if client.abortRequested or client.availableEasy.len == 0 or client.queue.len == 0:
+    if client.state == csAborting or client.availableEasy.len == 0 or
+        client.queue.len == 0:
       done = true
     else:
       request = client.queue.popFirst()
@@ -291,168 +217,139 @@ proc dispatchQueuedRequests(client: Relay) =
     release(client.lock)
 
     if not done:
-      var dispatched = true
-      var dispatchError = ""
+      request.easy = move easy
+      var error: TransportError
       try:
-        request.easy = move easy
         configureEasy(client, request, request.easy)
         client.multi.addHandle(request.easy)
       except CatchableError:
-        dispatched = false
-        dispatchError = getCurrentExceptionMsg()
+        error = newTransportError(teInternal, getCurrentExceptionMsg())
 
       acquire(client.lock)
-      if dispatched:
+      if error.kind == teNone:
         client.inFlight[handleKey(request.easy)] = request
       else:
         client.availableEasy.add(move request.easy)
-        client.storeCompletionLocked(
-          (newResponse(request), newTransportError(teInternal, dispatchError)))
+        client.storeCompletionLocked((newResponse(request), error))
       release(client.lock)
 
-proc waitForWorkOrClose(client: Relay): bool =
+proc waitForWorkOrClose(client: var HttpClientObj): bool =
   result = true
   acquire(client.lock)
-  while not client.abortRequested and not client.closeRequested and
+  while client.state == csRunning and
       client.queue.len == 0 and client.inFlight.len == 0:
     wait(client.wakeCond, client.lock)
 
-  if client.abortRequested:
+  if client.state == csAborting:
     result = false
-  elif client.closeRequested and client.queue.len == 0 and client.inFlight.len == 0:
+  elif client.state == csStopping and client.queue.len == 0 and client.inFlight.len == 0:
     result = false
   release(client.lock)
 
-proc workerMain(clientPtr: ptr RelayObj) {.thread, raises: [].} =
-  let client = cast[Relay](clientPtr)
+proc workerMain(client: ptr HttpClientObj) {.thread, raises: [].} =
   while true:
-    dispatchQueuedRequests(client)
+    dispatchQueuedRequests(client[])
 
     acquire(client.lock)
     let hasInflight = client.inFlight.len > 0
-    let shouldAbort = client.abortRequested
+    let shouldAbort = client.state == csAborting
     release(client.lock)
 
     if shouldAbort:
       acquire(client.lock)
-      flushCanceledLocked(client, "Canceled in abort")
+      client[].flushFailedLocked(newTransportError(teCanceled, "Canceled in abort"))
       release(client.lock)
       break
 
     if hasInflight:
-      if not runEasyLoop(client):
+      if not runEasyLoop(client[]):
         break
-      processDoneMessages(client)
-    elif not waitForWorkOrClose(client):
+      processDoneMessages(client[])
+    elif not waitForWorkOrClose(client[]):
       break
 
   acquire(client.lock)
-  client.workerRunning = false
-  signal(client.resultCond)
+  client.state = csStopped
+  broadcast(client.resultCond)
   release(client.lock)
 
-proc newRelay*(maxInFlight = 16; defaultTimeoutMs = 60_000;
-    maxRedirects = 10): Relay =
-  initGlobal()
-
-  result = Relay(
-    maxInFlight: max(1, maxInFlight),
-    defaultTimeoutMs: max(1, defaultTimeoutMs),
-    maxRedirects: max(0, maxRedirects),
-    workerRunning: true,
-    multi: initMulti(),
-    queue: initDeque[RequestWrap](),
-    readyResults: initDeque[RequestResult](),
-    inFlight: initTable[pointer, RequestWrap](),
-    availableEasy: @[]
-  )
-
-  initLock(result.lock)
-  initCond(result.wakeCond)
-  initCond(result.resultCond)
-
-  for _ in 0..<result.maxInFlight:
-    result.availableEasy.add(initEasy())
-
-  createThread(result.thread, workerMain, cast[ptr RelayObj](result))
-
-proc close*(client: Relay) =
-  if client.isNil:
-    return
-
-  acquire(client.lock)
-  if client.closed:
-    release(client.lock)
-  else:
-    client.closeRequested = true
-    signal(client.wakeCond)
-    release(client.lock)
-    joinThread(client.thread)
-
-    acquire(client.lock)
-    client.closed = true
-    client.availableEasy.reset()
-    client.queue.clear()
-    client.inFlight.clear()
-    client.readyResults.clear()
-    release(client.lock)
-
+proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
+    maxRedirects = 10): HttpClient =
+  ## Call close or abort before releasing the client.
+  let client = HttpClient(defaultTimeoutMs: max(1, defaultTimeoutMs),
+    maxRedirects: max(0, maxRedirects))
+  initCurl()
+  initLock(client.lock)
+  initCond(client.wakeCond)
+  initCond(client.resultCond)
+  try:
+    client.multi = initMulti()
+    for _ in 0..<max(1, maxInFlight):
+      client.availableEasy.add(initEasy())
+    createThread(client.thread, workerMain, addr client[])
+  except Exception:
+    reset(client.availableEasy)
+    reset(client.multi)
+    cleanupCurl()
     deinitCond(client.resultCond)
     deinitCond(client.wakeCond)
     deinitLock(client.lock)
-    cleanupGlobal()
+    raise
+  result = client
 
-proc abort*(client: Relay) =
-  if client.isNil:
-    return
-
-  acquire(client.lock)
-  if client.closed:
-    release(client.lock)
-  else:
-    client.abortRequested = true
-    client.closeRequested = true
+proc shutdown(client: var HttpClientObj; aborting: static[bool]) =
+  if not client.closed:
+    acquire(client.lock)
+    if client.state in {csRunning, csStopping}:
+      when aborting:
+        client.state = csAborting
+      else:
+        client.state = csStopping
     signal(client.wakeCond)
+    client.multi.wakeup()
     release(client.lock)
     joinThread(client.thread)
-
-    acquire(client.lock)
-    client.closed = true
-    client.availableEasy.reset()
-    client.queue.clear()
-    client.inFlight.clear()
-    client.readyResults.clear()
-    release(client.lock)
-
+    reset(client.availableEasy)
+    reset(client.queue)
+    reset(client.inFlight)
+    reset(client.readyResults)
+    reset(client.multi)
+    cleanupCurl()
     deinitCond(client.resultCond)
     deinitCond(client.wakeCond)
     deinitLock(client.lock)
-    cleanupGlobal()
+    client.closed = true
 
-proc hasRequests*(client: Relay): bool =
+proc close*(client: HttpClient) =
+  if client != nil: client[].shutdown(false)
+
+proc abort*(client: HttpClient) =
+  if client != nil: client[].shutdown(true)
+
+proc hasRequests*(client: HttpClient): bool =
   acquire(client.lock)
   result = client.queue.len > 0 or client.inFlight.len > 0
   release(client.lock)
 
-proc numInFlight*(client: Relay): int =
+proc numInFlight*(client: HttpClient): int =
   acquire(client.lock)
   result = client.inFlight.len
   release(client.lock)
 
-proc queueLen*(client: Relay): int =
+proc queueLen*(client: HttpClient): int =
   acquire(client.lock)
   result = client.queue.len
   release(client.lock)
 
-proc clearQueue*(client: Relay) =
+proc clearQueue*(client: HttpClient) =
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
-    client.storeCompletionLocked(
+    client[].storeCompletionLocked(
       (newResponse(queued), newTransportError(teCanceled, "Canceled in clearQueue")))
   release(client.lock)
 
-proc clientIsBusy(client: Relay): bool =
+proc clientIsBusy(client: HttpClient): bool =
   acquire(client.lock)
   result =
     client.queue.len > 0 or
@@ -473,33 +370,42 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
     easy: default(Easy)
   )
 
-proc startRequests*(client: Relay; batch: var RequestBatch) =
-  acquire(client.lock)
-  if client.closed or client.closeRequested:
-    release(client.lock)
+proc startRequests*(client: HttpClient; batch: var RequestBatch) =
+  if client.closed:
     raise newException(IOError, "client is closed")
-  
-  for request in batch.requests.mitems:
-    client.queue.addLast(wrapRequest(move request))
-  batch.requests.setLen(0)
-  
-  signal(client.wakeCond)
-  release(client.lock)
-
-proc startRequest*(client: Relay; request: sink RequestSpec) =
   acquire(client.lock)
-  if client.closed or client.closeRequested:
+  try:
+    if client.state != csRunning:
+      raise newException(IOError, "client is closed")
+
+    for request in batch.requests.mitems:
+      client.queue.addLast(wrapRequest(move request))
+    batch.requests.setLen(0)
+
+    signal(client.wakeCond)
+    client.multi.wakeup()
+  finally:
     release(client.lock)
-    raise newException(IOError, "client is closed")
-  
-  client.queue.addLast(wrapRequest(request))
-  
-  signal(client.wakeCond)
-  release(client.lock)
 
-proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
+proc startRequest*(client: HttpClient; request: sink RequestSpec) =
+  if client.closed:
+    raise newException(IOError, "client is closed")
   acquire(client.lock)
-  while client.readyResults.len == 0 and client.workerRunning:
+  try:
+    if client.state != csRunning:
+      raise newException(IOError, "client is closed")
+
+    client.queue.addLast(wrapRequest(request))
+
+    signal(client.wakeCond)
+    client.multi.wakeup()
+  finally:
+    release(client.lock)
+
+proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
+  acquire(client.lock)
+  while client.readyResults.len == 0 and
+      client.state in {csRunning, csStopping, csAborting}:
     wait(client.resultCond, client.lock)
 
   if client.readyResults.len > 0:
@@ -509,7 +415,7 @@ proc waitForResult*(client: Relay; outResult: var RequestResult): bool =
     result = false
   release(client.lock)
 
-proc pollForResult*(client: Relay; outResult: var RequestResult): bool =
+proc pollForResult*(client: HttpClient; outResult: var RequestResult): bool =
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
@@ -518,7 +424,7 @@ proc pollForResult*(client: Relay; outResult: var RequestResult): bool =
     result = false
   release(client.lock)
 
-proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults =
+proc makeRequests*(client: HttpClient; batch: var RequestBatch): RequestResults =
   if client.clientIsBusy():
     raise newException(IOError, "makeRequests requires an idle client")
 
@@ -531,7 +437,8 @@ proc makeRequests*(client: Relay; batch: var RequestBatch): RequestResults =
       raise newException(IOError, "client stopped before all responses arrived")
     result.add(item)
 
-proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult =
+proc makeRequest*(client: HttpClient; request: sink RequestSpec): RequestResult =
+  result = (Response(), noTransportError())
   if client.clientIsBusy():
     raise newException(IOError, "makeRequest requires an idle client")
 
@@ -539,7 +446,7 @@ proc makeRequest*(client: Relay; request: sink RequestSpec): RequestResult =
   if not client.waitForResult(result):
     raise newException(IOError, "client stopped before response arrived")
 
-proc makeVerbRequest(client: Relay; verb: HttpVerb; url: sink string;
+proc makeVerbRequest(client: HttpClient; verb: HttpVerb; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult {.inline.} =
   client.makeRequest(RequestSpec(
@@ -551,47 +458,47 @@ proc makeVerbRequest(client: Relay; verb: HttpVerb; url: sink string;
     timeoutMs: timeoutMs
   ))
 
-proc get*(client: Relay; url: sink string;
+proc get*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvGet, url, headers, "", requestId, timeoutMs)
 
-proc post*(client: Relay; url: sink string;
+proc post*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvPost, url, headers, body, requestId, timeoutMs)
 
-proc put*(client: Relay; url: sink string;
+proc put*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvPut, url, headers, body, requestId, timeoutMs)
 
-proc patch*(client: Relay; url: sink string;
+proc patch*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); body: sink string = "";
     requestId = 0'i64; timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvPatch, url, headers, body, requestId, timeoutMs)
 
-proc delete*(client: Relay; url: sink string;
+proc delete*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvDelete, url, headers, "", requestId, timeoutMs)
 
-proc head*(client: Relay; url: sink string;
+proc head*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvHead, url, headers, "", requestId, timeoutMs)
 
-proc options*(client: Relay; url: sink string;
+proc options*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvOptions, url, headers, "", requestId, timeoutMs)
 
-proc connect*(client: Relay; url: sink string;
+proc connect*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvConnect, url, headers, "", requestId, timeoutMs)
 
-proc trace*(client: Relay; url: sink string;
+proc trace*(client: HttpClient; url: sink string;
     headers: sink HttpHeaders = emptyHttpHeaders(); requestId = 0'i64;
     timeoutMs = 0): RequestResult =
   client.makeVerbRequest(hvTrace, url, headers, "", requestId, timeoutMs)

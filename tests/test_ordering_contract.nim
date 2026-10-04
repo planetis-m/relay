@@ -1,4 +1,4 @@
-import relay
+import relay/http
 import std/[algorithm, asynchttpserver, asyncdispatch, locks, net]
 
 type
@@ -19,7 +19,7 @@ proc teardownDispatcher() =
       poll(0)
       inc spins
     setGlobalDispatcher(nil)
-  except:
+  except Exception: # poll dispatches callbacks with the base Exception effect.
     discard
 
 proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
@@ -62,7 +62,7 @@ proc testServerMain(serverPtr: ptr TestServerObj) {.thread, raises: [].} =
 
   try:
     waitFor runServer()
-  except Exception:
+  except Exception: # waitFor exposes the base Exception effect.
     acquire(server.lock)
     server.startError = getCurrentExceptionMsg()
     if not server.ready:
@@ -120,7 +120,7 @@ proc testUrl(server: TestServer): string =
   "http://127.0.0.1:" & $int(server.port) & "/ok"
 
 proc verifyContains(batchResults: RequestResults; expectedRequestIds: seq[int64]) =
-  var gotRequestIds: seq[int64]
+  var gotRequestIds: seq[int64] = @[]
   var wantRequestIds = expectedRequestIds
   doAssert batchResults.len == expectedRequestIds.len
   for item in batchResults:
@@ -131,36 +131,37 @@ proc verifyContains(batchResults: RequestResults; expectedRequestIds: seq[int64]
 
 proc main =
   let server = startTestServer()
-  defer:
+  try:
+    let client = newHttpClient(maxInFlight = 3, defaultTimeoutMs = 2_000, maxRedirects = 5)
+    try:
+      let url = testUrl(server)
+      var batch: RequestBatch
+      batch.get(url, requestId = 1, timeoutMs = 2_000)
+      batch.get(url, requestId = 2, timeoutMs = 2_000)
+      batch.get(url, requestId = 3, timeoutMs = 2_000)
+
+      let blockingResults = client.makeRequests(batch)
+      verifyContains(blockingResults, @[1'i64, 2, 3])
+
+      var asyncBatch: RequestBatch
+      asyncBatch.get(url, requestId = 4, timeoutMs = 2_000)
+      asyncBatch.get(url, requestId = 5, timeoutMs = 2_000)
+      asyncBatch.get(url, requestId = 6, timeoutMs = 2_000)
+      # Capture size before startRequests(batch) drains the batch.
+      let pending = asyncBatch.len
+      client.startRequests(asyncBatch)
+
+      var asyncResults: RequestResults = @[]
+      for _ in 0..<pending:
+        var item: RequestResult
+        doAssert client.waitForResult(item)
+        asyncResults.add(item)
+
+      verifyContains(asyncResults, @[4'i64, 5, 6])
+    finally:
+      client.close()
+  finally:
     stopTestServer(server)
-
-  let client = newRelay(maxInFlight = 3, defaultTimeoutMs = 2_000, maxRedirects = 5)
-  defer: client.close()
-
-  let url = testUrl(server)
-  var batch: RequestBatch
-  batch.get(url, requestId = 1, timeoutMs = 2_000)
-  batch.get(url, requestId = 2, timeoutMs = 2_000)
-  batch.get(url, requestId = 3, timeoutMs = 2_000)
-
-  let blockingResults = client.makeRequests(batch)
-  verifyContains(blockingResults, @[1'i64, 2, 3])
-
-  var asyncBatch: RequestBatch
-  asyncBatch.get(url, requestId = 4, timeoutMs = 2_000)
-  asyncBatch.get(url, requestId = 5, timeoutMs = 2_000)
-  asyncBatch.get(url, requestId = 6, timeoutMs = 2_000)
-  # Capture size before startRequests(batch) drains the batch.
-  let pending = asyncBatch.len
-  client.startRequests(asyncBatch)
-
-  var asyncResults: RequestResults
-  for _ in 0..<pending:
-    var item: RequestResult
-    doAssert client.waitForResult(item)
-    asyncResults.add(item)
-
-  verifyContains(asyncResults, @[4'i64, 5, 6])
 
 when isMainModule:
   main()
