@@ -1,4 +1,4 @@
-import relay
+import relay/http
 import std/[algorithm, locks, net, os]
 
 type

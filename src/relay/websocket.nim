@@ -41,8 +41,7 @@ type
     terminal: bool
     terminalError: TransportError
     cancelRequested, closeRequested: bool
-  # Locks/conditions have identity; destructors must borrow rather than copy them.
-  WebSocketClientObj {.byref.} = object
+  WebSocketClientObj = object
     lock: Lock
     resultCond: Cond
     thread: Thread[ptr WebSocketClientObj]
@@ -179,12 +178,12 @@ proc configure(client: ptr WebSocketClientObj; multi: CURLM; conn: Connection) =
   conn.easy.setFollowRedirects(false, 0)
   if client.bypassProxy or client.proxy.len > 0:
     let proxy = if client.bypassProxy: "" else: client.proxy
-    conn.easy.setOption(CURLOPT_PROXY, proxy.cstring)
+    conn.easy.setOpt(CURLOPT_PROXY, proxy.cstring)
   if client.caInfo.len > 0:
-    conn.easy.setOption(CURLOPT_CAINFO, client.caInfo.cstring)
-  conn.easy.setOption(CURLOPT_CONNECT_ONLY, 2.clong)
-  conn.easy.setOption(CURLOPT_WS_OPTIONS, CURLWS_NOAUTOPONG)
-  checkMulti(curl_multi_add_handle(multi, conn.handle()), "curl_multi_add_handle failed")
+    conn.easy.setOpt(CURLOPT_CAINFO, client.caInfo.cstring)
+  conn.easy.setOpt(CURLOPT_CONNECT_ONLY, 2.clong)
+  conn.easy.setOpt(CURLOPT_WS_OPTIONS, CURLWS_NOAUTOPONG)
+  check(curl_multi_add_handle(multi, conn.handle()), "curl_multi_add_handle failed")
   conn.attached = true
 
 proc publish(client: ptr WebSocketClientObj; conn: Connection) =
@@ -212,7 +211,7 @@ proc readFrames(client: ptr WebSocketClientObj; conn: Connection) =
       if code == CURLE_AGAIN:
         blocked = true
       else:
-        checkCurl(code, "WebSocket receive failed")
+        check(code, "WebSocket receive failed")
         # Copy metadata before another WebSocket call invalidates libcurl's pointer.
         let flags = meta.flags.cuint
         let bytesleft = meta.bytesleft
@@ -268,7 +267,7 @@ proc writeFrame(conn: Connection; data: string; flags: cuint; offset: var int): 
   let buffer = if offset == data.len: nil else: cast[pointer](addr data[offset])
   let code = curl_ws_send(conn.handle(), buffer, (data.len - offset).csize_t,
     addr sent, 0, flags)
-  if code != CURLE_AGAIN: checkCurl(code, "WebSocket send failed")
+  if code != CURLE_AGAIN: check(code, "WebSocket send failed")
   offset += sent.int
   result = code == CURLE_OK and offset == data.len
 
@@ -283,7 +282,7 @@ proc writeData(conn: Connection; cmd: Command): bool =
   var sent: csize_t
   let code = curl_ws_send(conn.handle(), buffer, count.csize_t, addr sent, size, flags)
   conn.frameStarted = true
-  if code != CURLE_AGAIN: checkCurl(code, "WebSocket send failed")
+  if code != CURLE_AGAIN: check(code, "WebSocket send failed")
   conn.offset += sent.int
   result = code == CURLE_OK and conn.offset == data.len
 
@@ -377,7 +376,7 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
     while not done:
       client.processCommands(multi, connections)
       var running: cint
-      checkMulti(curl_multi_perform(multi, addr running), "curl_multi_perform failed")
+      check(curl_multi_perform(multi, addr running), "curl_multi_perform failed")
       client.upgrades(multi, connections)
       var fds: seq[curl_waitfd]
       acquire(client.lock)
@@ -419,7 +418,7 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
                   var fd = curl_waitfd(events: CURL_WAIT_POLLIN)
                   if conn.sends.len > 0 or conn.controls.len > 0:
                     fd.events = fd.events or CURL_WAIT_POLLOUT
-                  checkCurl(curl_easy_getinfo(conn.handle(), CURLINFO_ACTIVESOCKET, addr fd.fd),
+                  check(curl_easy_getinfo(conn.handle(), CURLINFO_ACTIVESOCKET, addr fd.fd),
                     "CURLINFO_ACTIVESOCKET failed")
                   fds.add(fd)
           except CatchableError:
@@ -435,7 +434,7 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
       if not done:
         var ready: cint
         let extra = if fds.len == 0: nil else: addr fds[0]
-        checkMulti(curl_multi_poll(multi, extra, fds.len.cuint, 20, addr ready),
+        check(curl_multi_poll(multi, extra, fds.len.cuint, 20, addr ready),
           "curl_multi_poll failed")
   except CatchableError:
     let error = newTransportError(teInternal, getCurrentExceptionMsg())

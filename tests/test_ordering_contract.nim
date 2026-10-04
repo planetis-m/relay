@@ -1,4 +1,4 @@
-import relay
+import relay/http
 import std/[algorithm, asynchttpserver, asyncdispatch, locks, net]
 
 type

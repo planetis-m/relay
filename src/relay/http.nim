@@ -63,8 +63,7 @@ type
     easy: Easy
     curlHeaders: Slist
 
-  # Synchronization primitives must retain identity during automatic destruction.
-  HttpClientObj {.byref.} = object
+  HttpClientObj = object
     lock: Lock
     wakeCond: Cond
     resultCond: Cond
