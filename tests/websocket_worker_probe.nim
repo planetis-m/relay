@@ -149,12 +149,12 @@ proc main() =
           let http = newHttpClient()
           try:
             doAssert http.get(url.replace("ws://", "http://") & "http").error.kind == teNone
+            doAssert http.numInFlight() == 0 and http.queueLen() == 0
+            doAssert not http.hasRequests()
+            var response: RequestResult
+            doAssert not http.pollForResult(response)
           finally:
             http.close()
-          var response: RequestResult
-          doAssert not http.waitForResult(response)
-          doAssert http.numInFlight() == 0 and http.queueLen() == 0
-          doAssert not http.hasRequests()
         finally:
           temporary.abort()
         var completion: WebSocketResult
@@ -250,7 +250,6 @@ proc main() =
           let alias = http
           alias.close()
           http.close()
-          doAssertRaises IOError: discard http.get(url)
           doAssert service.resultFor(service.text(first.connectionId, "survives")).error.kind == teNone
           doAssert service.eventFor(first.connectionId).message.data == "survives"
         else:

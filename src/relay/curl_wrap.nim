@@ -75,6 +75,12 @@ proc setOpt*[T](easy: Easy; option: CURLoption; value: T) =
   if code != CURLE_OK:
     check(code, "curl_easy_setopt(" & $cint(option) & ") failed")
 
+proc getInfo*[T](easy: Easy; info: CURLINFO; value: var T) =
+  ## Read curl info into storage with the C type required by the info selector.
+  let code = curl_easy_getinfo(easy.raw, info, addr value)
+  if code != CURLE_OK:
+    check(code, "curl_easy_getinfo(" & $cint(info) & ") failed")
+
 proc initEasy*(): Easy =
   var easy = Easy(raw: curl_easy_init(), errorBuf: newString(256))
   if easy.raw == nil:
@@ -188,19 +194,16 @@ proc reset*(easy: var Easy) =
 
 proc responseCode*(easy: Easy): int =
   var code: clong
-  check(curl_easy_getinfo(easy.raw, CURLINFO_RESPONSE_CODE, addr code),
-    "CURLINFO_RESPONSE_CODE failed")
+  easy.getInfo(CURLINFO_RESPONSE_CODE, code)
   result = int(code)
 
 proc effectiveUrl*(easy: Easy): string =
   var urlPtr: cstring
-  check(curl_easy_getinfo(easy.raw, CURLINFO_EFFECTIVE_URL, addr urlPtr),
-    "CURLINFO_EFFECTIVE_URL failed")
+  easy.getInfo(CURLINFO_EFFECTIVE_URL, urlPtr)
   result = $urlPtr
 
 proc activeSocket*(easy: Easy): SocketHandle =
-  check(curl_easy_getinfo(easy.raw, CURLINFO_ACTIVESOCKET, addr result),
-    "CURLINFO_ACTIVESOCKET failed")
+  easy.getInfo(CURLINFO_ACTIVESOCKET, result)
 
 proc recvFrame*(easy: Easy; buffer: pointer; size: csize_t;
     received: var csize_t; frame: var tuple[flags: cuint, bytesLeft: curl_off_t]): bool =
@@ -226,10 +229,10 @@ proc addHeader*(list: var Slist; headerLine: string) =
     raise newException(IOError, "curl_slist_append failed")
   list.raw = added
 
-proc handleKey*(easy: Easy): pointer =
+proc handleKey*(easy: Easy): pointer {.inline.} =
   easy.raw
 
-proc handleKey*(msg: CURLMsg): pointer =
+proc handleKey*(msg: CURLMsg): pointer {.inline.} =
   msg.easy_handle
 
 proc wakeup*(multi: CURLM) {.raises: [].} =

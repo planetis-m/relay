@@ -112,7 +112,7 @@ proc newResponse(request: RequestWrap): Response {.inline.} =
 
 proc storeCompletionLocked(client: var HttpClientObj; item: sink RequestResult) =
   client.readyResults.addLast(item)
-  broadcast(client.resultCond)
+  signal(client.resultCond)
 
 proc configureEasy(client: HttpClientObj; request: RequestWrap; easy: var Easy) =
   easy.reset()
@@ -328,25 +328,21 @@ proc abort*(client: HttpClient) =
   if client != nil: client[].shutdown(true)
 
 proc hasRequests*(client: HttpClient): bool =
-  if client.closed: return false
   acquire(client.lock)
   result = client.queue.len > 0 or client.inFlight.len > 0
   release(client.lock)
 
 proc numInFlight*(client: HttpClient): int =
-  if client.closed: return 0
   acquire(client.lock)
   result = client.inFlight.len
   release(client.lock)
 
 proc queueLen*(client: HttpClient): int =
-  if client.closed: return 0
   acquire(client.lock)
   result = client.queue.len
   release(client.lock)
 
 proc clearQueue*(client: HttpClient) =
-  if client.closed: return
   acquire(client.lock)
   while client.queue.len > 0:
     let queued = client.queue.popFirst()
@@ -355,7 +351,6 @@ proc clearQueue*(client: HttpClient) =
   release(client.lock)
 
 proc clientIsBusy(client: HttpClient): bool =
-  if client.closed: return false
   acquire(client.lock)
   result =
     client.queue.len > 0 or
@@ -409,7 +404,6 @@ proc startRequest*(client: HttpClient; request: sink RequestSpec) =
     release(client.lock)
 
 proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
-  if client.closed: return false
   acquire(client.lock)
   while client.readyResults.len == 0 and
       client.state in {csRunning, csStopping, csAborting}:
@@ -423,7 +417,6 @@ proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
   release(client.lock)
 
 proc pollForResult*(client: HttpClient; outResult: var RequestResult): bool =
-  if client.closed: return false
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()

@@ -167,6 +167,8 @@ proc abort*(client: HttpClient)
   thread.
 - `close` / `abort`: call from the same thread that created the `HttpClient`; do not
   invoke them concurrently with other client calls. Finish other callers before shutdown.
+- Drain HTTP results and make queries before shutdown. Afterwards, only repeated
+  `close` / `abort` calls are supported.
 - Each client pairs curl initialization with cleanup after releasing its handles.
   Libcurl supplies the counting and synchronization. HTTP and WebSocket workers
   can coexist and close in either order.
