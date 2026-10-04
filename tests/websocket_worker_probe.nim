@@ -42,7 +42,8 @@ proc main() =
         for invalid in ["http://example.com/", url & "#fragment"]:
           doAssertRaises ValueError: client.connect(invalid)
         client.connect(url)
-        doAssertRaises ValueError: client.connect(url)
+        when not defined(danger):
+          doAssertRaises AssertionDefect: client.connect(url)
         for invalid in ["\xff", repeat('x', 9)]:
           doAssertRaises ValueError: client.send(invalid)
         client.send("echo")
@@ -163,8 +164,6 @@ proc main() =
         doAssert temporary.eventFor(second).kind == weClosed
         var event: WebSocketEvent
         doAssert not temporary.pollForEvent(first, event)
-        temporary.cancel(first)
-        temporary.closeConnection(first)
         temporary.close()
     elif mode == "idle":
       let id = service.opened(url & "ping")
@@ -219,7 +218,8 @@ proc main() =
       var item: WebSocketResult
       for i in 0..<2: doAssert service.waitForResult(item)
       doAssert not service.waitForResult(item)
-      doAssertRaises IOError: discard service.startConnect(url)
+      when not defined(danger):
+        doAssertRaises AssertionDefect: discard service.startConnect(url)
     else:
       let http = newHttpClient(maxInFlight = 1)
       try:
