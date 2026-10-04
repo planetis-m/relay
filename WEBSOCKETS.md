@@ -27,7 +27,7 @@ once; cancellation does not erase results. There are no retry/reconnect semantic
 
 Submission/retrieval is synchronized. Use one result consumer and one event consumer
 per connection to preserve application ordering. Lifecycle calls must run on the
-creating thread, without concurrent lifecycle calls, matching Relay. Aliases share
+creating thread, without concurrent lifecycle calls, matching HttpClient. Aliases share
 close state. Dropping the final owner aborts and joins before locks/queues are freed;
 worker threads borrow owner pointers and do not retain their own owner. Lifecycle
 objects use `byref` so destruction never copies synchronization primitives.
@@ -90,7 +90,8 @@ code and reason UTF-8 are validated. Libcurl owns masking and wire framing.
 HTTP and WebSockets share curl wrappers, synchronized counted global init/cleanup,
 transport errors/classification and the wrapper wakeup primitive. Easy's move hook
 clears moved-from storage before moving its error buffer; failed slist append preserves
-the prior owner. HTTP public request APIs/defaults remain compatible. HTTP's queues
+the prior owner. HTTP uses `HttpClient`/`newHttpClient`; `Relay`/`newRelay` remain compatibility aliases.
+HTTP public request APIs/defaults remain compatible. HTTP's queues
 retain their previous behavior; WebSocket limits do not impose a new HTTP queue policy.
 No generic executor/worker framework is introduced.
 

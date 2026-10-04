@@ -479,7 +479,7 @@ proc workerMain(client: ptr WebSocketServiceObj) {.thread.} =
     release(client.lock)
 
 proc stop(client: ptr WebSocketServiceObj; aborting: bool) =
-  # Lifecycle calls belong to the creating thread, matching Relay's receiver contract.
+  # Lifecycle calls belong to the creating thread, matching HttpClient's receiver contract.
   acquire(client.lock)
   let join = not client.closed
   if join:
@@ -499,7 +499,7 @@ proc newWebSocketService*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
     defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     maxQueuedBytes = 32 * 1024 * 1024; closeTimeoutMs = 100;
     bypassProxy = false; proxy = ""; caInfo = ""): WebSocketService =
-  ## One worker owns all curl state. Nonpositive limits clamp to one, like newRelay.
+  ## One worker owns all curl state. Nonpositive limits clamp to one, like newHttpClient.
   when not defined(gcAtomicArc):
     {.error: "Relay WebSockets require --mm:atomicArc".}
   let client = WebSocketService(maxConnections: max(1, maxConnections),
