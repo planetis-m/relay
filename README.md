@@ -168,12 +168,13 @@ proc abort*(client: HttpClient)
 - HttpClient ownership: treat a `HttpClient` instance as single-owner from the creating
   thread.
 - `close` / `abort`: call from the same thread that created the `HttpClient`; do not
-  invoke them concurrently from other threads.
+  invoke them concurrently with other client calls. Finish other callers before shutdown.
 - Each client pairs curl initialization with cleanup after releasing its handles.
   Libcurl supplies the counting and synchronization. HTTP and WebSocket workers
   can coexist and close in either order.
 - Aliases retain shared lifecycle state; repeated close/abort calls are safe.
-  Dropping the final owner aborts and joins automatically.
+  Call `close` or `abort` before releasing the final owner, using `try/finally`.
+  Destruction does not stop workers.
 
 ### Building Request Batches
 ```nim

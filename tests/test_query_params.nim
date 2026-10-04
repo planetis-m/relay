@@ -1,4 +1,5 @@
-import relay/http_query, std/strutils
+import relay/http_query
+import std/assertions
 
 proc main =
   block empty:
@@ -60,18 +61,8 @@ proc main =
     doAssert decodeQueryComponent("") == ""
 
   block decode_invalid:
-    var raised = false
-    try:
-      discard decodeQueryComponent("%2")
-    except ValueError:
-      raised = true
-    doAssert raised
-    raised = false
-    try:
-      discard decodeQueryComponent("%zz")
-    except ValueError:
-      raised = true
-    doAssert raised
+    doAssertRaises ValueError: discard decodeQueryComponent("%2")
+    doAssertRaises ValueError: discard decodeQueryComponent("%zz")
 
   block dollar_roundtrip:
     var q: QueryParams

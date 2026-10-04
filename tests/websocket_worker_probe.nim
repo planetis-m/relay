@@ -35,7 +35,23 @@ proc main() =
     maxEvents = 2, maxQueuedBytes = if mode == "bytes": 8 else: 32 * 1024 * 1024,
     defaultTimeoutMs = 1500, bypassProxy = true, caInfo = paramStr(3))
   try:
-    if mode.startsWith("tls"):
+    if mode == "text-client":
+      let client = newWebSocket(defaultTimeoutMs = 1500, maxMessageBytes = 8,
+        bypassProxy = true)
+      try:
+        for invalid in ["http://example.com/", url & "#fragment"]:
+          doAssertRaises ValueError: client.connect(invalid)
+        client.connect(url)
+        doAssertRaises ValueError: client.connect(url)
+        for invalid in ["\xff", repeat('x', 9)]:
+          doAssertRaises ValueError: client.send(invalid)
+        client.send("echo")
+        doAssert client.receive() == "echo"
+        doAssertRaises TimeoutError: discard client.receive(timeoutMs = 30)
+        doAssertRaises IOError: client.send("closed")
+      finally:
+        client.close()
+    elif mode.startsWith("tls"):
       let ids = service.startConnect(url)
       let response = service.resultFor(ids.operationId)
       if mode == "tls-accept":
@@ -99,14 +115,33 @@ proc main() =
       doAssert service.resultFor(a.operationId).error.kind == teCanceled
       doAssert service.resultFor(b.operationId).error.kind == teCanceled
       service.abort()
-    elif mode == "drop-service":
+    elif mode == "shutdown-scope":
       block:
         let temporary = newWebSocketClient(bypassProxy = true)
-        discard temporary.opened(url)
-        discard temporary.opened(url)
-        let http = newHttpClient()
-        doAssert http.get(url.replace("ws://", "http://") & "http").error.kind == teNone
-        # Both workers must terminate when final owners leave this scope.
+        var first, second: ConnectionId
+        try:
+          first = temporary.opened(url)
+          second = temporary.opened(url)
+          let http = newHttpClient()
+          try:
+            doAssert http.get(url.replace("ws://", "http://") & "http").error.kind == teNone
+          finally:
+            http.close()
+          var response: RequestResult
+          doAssert not http.waitForResult(response)
+          doAssert http.numInFlight() == 0 and http.queueLen() == 0
+          doAssert not http.hasRequests()
+        finally:
+          temporary.abort()
+        var completion: WebSocketResult
+        doAssert not temporary.waitForResult(completion)
+        doAssert temporary.eventFor(first).kind == weClosed
+        doAssert temporary.eventFor(second).kind == weClosed
+        var event: WebSocketEvent
+        doAssert not temporary.pollForEvent(first, event)
+        temporary.cancel(first)
+        temporary.closeConnection(first)
+        temporary.close()
     elif mode == "idle":
       let id = service.opened(url & "ping")
       sleep(80) # No receive call: pong must already have reached the independent peer.

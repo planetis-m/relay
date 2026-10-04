@@ -1,5 +1,5 @@
 import relay/http
-import std/[algorithm, locks, net, os]
+import std/[algorithm, assertions, locks, net, os]
 
 type
   StallServerObj = object
@@ -39,7 +39,7 @@ proc stallServerMain(serverPtr: ptr StallServerObj) {.thread, raises: [].} =
       if shouldStop:
         break
       sleep(10)
-  except Exception:
+  except CatchableError:
     acquire(server.lock)
     server.startError = getCurrentExceptionMsg()
     if not server.ready:
@@ -153,27 +153,22 @@ proc testClearQueueCancelsQueuedRequests() =
 proc testMakeRequestsRequiresIdleClient() =
   let server = startStallServer()
   try:
-    var client = newHttpClient(maxInFlight = 1, defaultTimeoutMs = 5_000, maxRedirects = 5)
-
-    let url = stallUrl(server)
-    var firstBatch: RequestBatch
-    firstBatch.get(url, requestId = 11, timeoutMs = 5_000)
-    client.startRequests(firstBatch)
-
-    doAssert waitForQueuedState(client, minQueueLen = 0, timeoutMs = 1_000),
-      "relay did not dispatch initial request"
-
-    var secondBatch: RequestBatch
-    secondBatch.get(url, requestId = 22, timeoutMs = 5_000)
-
-    var raisedBusy = false
+    let client = newHttpClient(maxInFlight = 1, defaultTimeoutMs = 5_000, maxRedirects = 5)
     try:
-      discard client.makeRequests(secondBatch)
-    except IOError:
-      raisedBusy = true
-    doAssert raisedBusy, "makeRequests should reject a non-idle client"
+      let url = stallUrl(server)
+      var firstBatch: RequestBatch
+      firstBatch.get(url, requestId = 11, timeoutMs = 5_000)
+      client.startRequests(firstBatch)
 
-    client.abort()
+      doAssert waitForQueuedState(client, minQueueLen = 0, timeoutMs = 1_000),
+        "relay did not dispatch initial request"
+
+      var secondBatch: RequestBatch
+      secondBatch.get(url, requestId = 22, timeoutMs = 5_000)
+
+      doAssertRaises IOError: discard client.makeRequests(secondBatch)
+    finally:
+      client.abort()
   finally:
     stopStallServer(server)
 
