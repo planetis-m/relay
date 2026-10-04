@@ -11,8 +11,7 @@ proc checkResult(item: RequestResult; verb: HttpVerb; requestId: int64; url: str
   doAssert item.error.kind != teNone
 
 proc main =
-  let legacy: Relay = newRelay(maxInFlight = 1, defaultTimeoutMs = 500)
-  let client: HttpClient = legacy
+  let client = newHttpClient(maxInFlight = 1, defaultTimeoutMs = 500)
   try:
     var batch: RequestBatch
     batch.get(UnreachableA, requestId = 1)
@@ -69,7 +68,6 @@ proc main =
       doAssert client.waitForResult(drained)
   finally:
     client.close()
-    legacy.close()
 
 when isMainModule:
   main()

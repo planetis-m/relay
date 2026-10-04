@@ -1,4 +1,3 @@
-import std/locks
 import ./bindings/curl
 
 export CurlMsgType, CURLMsg
@@ -71,13 +70,18 @@ proc checkMulti*(code: CURLMcode; context: string) {.noinline.} =
   if code != CURLM_OK:
     raise newException(IOError, context & ": " & $curl_multi_strerror(code))
 
+proc setOption*[T](easy: Easy; option: CURLoption; value: T) =
+  ## Set a curl option, preserving pointer lifetime requirements of the C API.
+  let code = curl_easy_setopt(easy.raw, option, value)
+  if code != CURLE_OK:
+    checkCurl(code, "curl_easy_setopt(" & $cint(option) & ") failed")
+
 proc initEasy*(): Easy =
   result = Easy(raw: curl_easy_init(), errorBuf: newString(256))
   if result.raw == nil:
     raise newException(IOError, "curl_easy_init failed")
-  checkCurl(curl_easy_setopt(result.raw, CURLOPT_ERRORBUFFER, result.errorBuf.cstring),
-    "CURLOPT_ERRORBUFFER failed")
-  checkCurl(curl_easy_setopt(result.raw, CURLOPT_NOSIGNAL, clong(1)), "CURLOPT_NOSIGNAL failed")
+  result.setOption(CURLOPT_ERRORBUFFER, result.errorBuf.cstring)
+  result.setOption(CURLOPT_NOSIGNAL, clong(1))
 
 proc initMulti*(): Multi =
   result = Multi(raw: curl_multi_init())
@@ -86,26 +90,13 @@ proc initMulti*(): Multi =
   checkMulti(curl_multi_setopt(result.raw, CURLMOPT_PIPELINING, CURLPIPE_MULTIPLEX),
     "CURLMOPT_PIPELINING failed")
 
-var globalLock: Lock
-var globalUsers = 0
-initLock(globalLock)
+proc initCurl*() =
+  ## Acquire one libcurl initialization reference using the supported thread-safe build.
+  checkCurl(curl_global_init(CURL_GLOBAL_DEFAULT), "curl_global_init failed")
 
-proc initGlobal*() =
-  acquire(globalLock)
-  try:
-    if globalUsers == 0:
-      checkCurl(curl_global_init(culong(3)), "curl_global_init failed")
-    inc globalUsers
-  finally:
-    release(globalLock)
-
-proc cleanupGlobal*() =
-  acquire(globalLock)
-  if globalUsers > 0:
-    dec globalUsers
-    if globalUsers == 0:
-      curl_global_cleanup()
-  release(globalLock)
+proc cleanupCurl*() =
+  ## Release a matching reference after its handles and workers have stopped.
+  curl_global_cleanup()
 
 proc addHandle*(multi: var Multi; easy: Easy) =
   checkMulti(curl_multi_add_handle(multi.raw, easy.raw), "curl_multi_add_handle failed")
@@ -139,74 +130,55 @@ proc tryInfoRead*(multi: var Multi; msg: var CURLMsg; msgsInQueue: var int): boo
     result = true
 
 proc setUrl*(easy: var Easy; url: string) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_URL, url.cstring), "CURLOPT_URL failed")
+  easy.setOption(CURLOPT_URL, url.cstring)
 
 proc setWriteCallback*(easy: var Easy; cb: curl_write_callback; userdata: pointer) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_WRITEFUNCTION, cb),
-    "CURLOPT_WRITEFUNCTION failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_WRITEDATA, userdata),
-    "CURLOPT_WRITEDATA failed")
+  easy.setOption(CURLOPT_WRITEFUNCTION, cb)
+  easy.setOption(CURLOPT_WRITEDATA, userdata)
 
 proc setHeaderCallback*(easy: var Easy; cb: curl_write_callback; userdata: pointer) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_HEADERFUNCTION, cb),
-    "CURLOPT_HEADERFUNCTION failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_HEADERDATA, userdata),
-    "CURLOPT_HEADERDATA failed")
+  easy.setOption(CURLOPT_HEADERFUNCTION, cb)
+  easy.setOption(CURLOPT_HEADERDATA, userdata)
 
 proc setRequestBody*(easy: var Easy; data: string) =
   # WARNING: CURLOPT_POSTFIELDS does not copy this buffer; caller must keep data
   # alive and unchanged until the transfer is finished or the handle is removed.
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDS, data.cstring),
-    "CURLOPT_POSTFIELDS failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_POSTFIELDSIZE, clong(data.len)),
-    "CURLOPT_POSTFIELDSIZE failed")
+  easy.setOption(CURLOPT_POSTFIELDS, data.cstring)
+  easy.setOption(CURLOPT_POSTFIELDSIZE, clong(data.len))
 
 proc setMethod*(easy: var Easy; verb: string) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_CUSTOMREQUEST, verb.cstring),
-    "CURLOPT_CUSTOMREQUEST failed")
+  easy.setOption(CURLOPT_CUSTOMREQUEST, verb.cstring)
 
 proc setNoBody*(easy: var Easy; enabled: bool) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_NOBODY, clong(if enabled: 1 else: 0)),
-    "CURLOPT_NOBODY failed")
+  easy.setOption(CURLOPT_NOBODY, clong(if enabled: 1 else: 0))
 
 proc setHeaders*(easy: var Easy; headers: Slist) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_HTTPHEADER, headers.raw),
-    "CURLOPT_HTTPHEADER failed")
+  easy.setOption(CURLOPT_HTTPHEADER, headers.raw)
 
 proc setFollowRedirects*(easy: var Easy; follow: bool; maxRedirects: int) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_FOLLOWLOCATION, clong(if follow: 1 else: 0)),
-    "CURLOPT_FOLLOWLOCATION failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_MAXREDIRS, clong(maxRedirects)),
-    "CURLOPT_MAXREDIRS failed")
+  easy.setOption(CURLOPT_FOLLOWLOCATION, clong(if follow: 1 else: 0))
+  easy.setOption(CURLOPT_MAXREDIRS, clong(maxRedirects))
 
 proc setTimeoutMs*(easy: var Easy; timeoutMs: int) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_TIMEOUT_MS, clong(timeoutMs)),
-    "CURLOPT_TIMEOUT_MS failed")
+  easy.setOption(CURLOPT_TIMEOUT_MS, clong(timeoutMs))
 
 proc setConnectTimeoutMs*(easy: var Easy; timeoutMs: int) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_CONNECTTIMEOUT_MS, clong(timeoutMs)),
-    "CURLOPT_CONNECTTIMEOUT_MS failed")
+  easy.setOption(CURLOPT_CONNECTTIMEOUT_MS, clong(timeoutMs))
 
 proc setSslVerify*(easy: var Easy; verifyPeer: bool; verifyHost: bool) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_SSL_VERIFYPEER,
-    clong(if verifyPeer: 1 else: 0)), "CURLOPT_SSL_VERIFYPEER failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_SSL_VERIFYHOST,
-    clong(if verifyHost: 2 else: 0)), "CURLOPT_SSL_VERIFYHOST failed")
+  easy.setOption(CURLOPT_SSL_VERIFYPEER, clong(if verifyPeer: 1 else: 0))
+  easy.setOption(CURLOPT_SSL_VERIFYHOST, clong(if verifyHost: 2 else: 0))
 
 proc setAcceptEncoding*(easy: var Easy; encoding: string) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_ACCEPT_ENCODING, encoding.cstring),
-    "CURLOPT_ACCEPT_ENCODING failed")
+  easy.setOption(CURLOPT_ACCEPT_ENCODING, encoding.cstring)
 
 proc setHttpVersion2Tls*(easy: var Easy) =
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS),
-    "CURLOPT_HTTP_VERSION failed")
+  easy.setOption(CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_2TLS)
 
 proc reset*(easy: var Easy) =
   curl_easy_reset(easy.raw)
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_ERRORBUFFER, easy.errorBuf.cstring),
-    "CURLOPT_ERRORBUFFER failed")
-  checkCurl(curl_easy_setopt(easy.raw, CURLOPT_NOSIGNAL, clong(1)),
-    "CURLOPT_NOSIGNAL failed")
+  easy.setOption(CURLOPT_ERRORBUFFER, easy.errorBuf.cstring)
+  easy.setOption(CURLOPT_NOSIGNAL, clong(1))
 
 proc responseCode*(easy: Easy): int =
   var code: clong

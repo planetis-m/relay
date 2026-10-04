@@ -83,7 +83,8 @@ finally:
 
 ## API Reference
 
-HTTP APIs are exported from `src/relay.nim`; WebSocket APIs from `relay/websocket`.
+HTTP APIs live in `relay/http` and are exported by `import relay`.
+Persistent connection APIs live in `relay/websocket`.
 
 | Owner | Constructor | Purpose |
 | --- | --- | --- |
@@ -91,10 +92,21 @@ HTTP APIs are exported from `src/relay.nim`; WebSocket APIs from `relay/websocke
 | `WebSocketClient` | `newWebSocketClient` | One worker for multiple persistent WebSocket connections |
 | `WebSocket` | `newWebSocket` | Synchronous text interface for one WebSocket connection |
 
-`Relay` and `newRelay` remain HTTP compatibility aliases. Existing request/result
-names and HTTP verb helpers retain their contracts. `connect` on `HttpClient`
+HTTP uses `HttpClient`/`newHttpClient`; the old owner and constructor names are removed.
+Request/result names and HTTP verb helpers retain their contracts. `connect` on `HttpClient`
 issues HTTP CONNECT; `connect` on `WebSocket` opens a persistent connection.
 `startConnect` and `startSend` submit operations to `WebSocketClient`.
+
+### Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `relay/bindings/curl` | C declarations for curl handles, HTTP and WebSockets |
+| `relay/curl_wrap` | Owned handles, checked options and curl operations |
+| `relay/transport_errors` | Transport error construction, classification and retry predicates |
+| `relay/http` | HTTP worker, requests, batches and completions |
+| `relay/websocket` | Multi-connection worker and synchronous text connection |
+| `relay` | HTTP package exports |
 
 ### Core Types
 
@@ -151,15 +163,16 @@ proc abort*(client: HttpClient)
 
 ### Threading & Lifecycle Constraints
 
-- Memory model: this repo pins `atomicArc` in `config.nims`.
-  HttpClient shares `ref` objects (`HttpClient`, `RequestWrap`) across threads, so atomic
-  refcounting is the safe default.
+- Build with `--threads:on --mm:atomicArc`; `tests/config.nims` sets these for tests.
+  Use a thread-safe libcurl build with matching headers. WebSockets require 8.14+.
+  These are build requirements; clients do not probe versions or memory models.
 - HttpClient ownership: treat a `HttpClient` instance as single-owner from the creating
   thread.
 - `close` / `abort`: call from the same thread that created the `HttpClient`; do not
   invoke them concurrently from other threads.
-- HTTP clients coordinate process-wide libcurl initialization/cleanup.
-  HTTP and WebSocket workers can coexist and close in either order.
+- Each client pairs curl initialization with cleanup after releasing its handles.
+  Libcurl supplies the counting and synchronization. HTTP and WebSocket workers
+  can coexist and close in either order.
 - Aliases retain shared lifecycle state; repeated close/abort calls are safe.
   Dropping the final owner aborts and joins automatically.
 

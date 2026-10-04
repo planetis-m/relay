@@ -2,7 +2,7 @@
 ## Requires --mm:atomicArc and --threads:on. Application callbacks stay on consumers.
 import std/[base64, deques, locks, monotimes, sha1, strutils, sysrand, times, unicode, uri]
 import ./[curl_wrap, transport_errors]
-import ./bindings/[curl, websockets]
+import ./bindings/curl
 export transport_errors
 
 type
@@ -179,15 +179,11 @@ proc configure(client: ptr WebSocketClientObj; multi: CURLM; conn: Connection) =
   conn.easy.setFollowRedirects(false, 0)
   if client.bypassProxy or client.proxy.len > 0:
     let proxy = if client.bypassProxy: "" else: client.proxy
-    checkCurl(curl_easy_setopt(conn.handle(), CURLOPT_PROXY, proxy.cstring),
-      "CURLOPT_PROXY failed")
+    conn.easy.setOption(CURLOPT_PROXY, proxy.cstring)
   if client.caInfo.len > 0:
-    checkCurl(curl_easy_setopt(conn.handle(), CURLOPT_CAINFO, client.caInfo.cstring),
-      "CURLOPT_CAINFO failed")
-  checkCurl(curl_easy_setopt(conn.handle(), CURLOPT_CONNECT_ONLY, 2.clong),
-    "CURLOPT_CONNECT_ONLY failed")
-  checkCurl(curl_easy_setopt(conn.handle(), CURLOPT_WS_OPTIONS, CURLWS_NOAUTOPONG),
-    "CURLOPT_WS_OPTIONS failed")
+    conn.easy.setOption(CURLOPT_CAINFO, client.caInfo.cstring)
+  conn.easy.setOption(CURLOPT_CONNECT_ONLY, 2.clong)
+  conn.easy.setOption(CURLOPT_WS_OPTIONS, CURLWS_NOAUTOPONG)
   checkMulti(curl_multi_add_handle(multi, conn.handle()), "curl_multi_add_handle failed")
   conn.attached = true
 
@@ -368,10 +364,8 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
   var globalInitialized = false
   var connections: seq[Connection]
   try:
-    initGlobal()
+    initCurl()
     globalInitialized = true
-    if curl_version_info(CURLVERSION_FIRST).version_num < 0x080e00:
-      raise newException(IOError, "WebSocket client requires libcurl 8.14 or newer")
     multi = curl_multi_init()
     if multi == nil: raise newException(IOError, "curl_multi_init failed")
     acquire(client.lock)
@@ -462,7 +456,7 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
     client.wakeHandle = nil
     release(client.lock)
     if multi != nil: discard curl_multi_cleanup(multi)
-    if globalInitialized: cleanupGlobal()
+    if globalInitialized: cleanupCurl()
     acquire(client.lock)
     client.running = false
     client.started = true
@@ -491,8 +485,6 @@ proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
     maxQueuedBytes = 32 * 1024 * 1024; closeTimeoutMs = 100;
     bypassProxy = false; proxy = ""; caInfo = ""): WebSocketClient =
   ## One worker owns all curl state. Nonpositive limits clamp to one, like newHttpClient.
-  when not defined(gcAtomicArc):
-    {.error: "Relay WebSockets require --mm:atomicArc".}
   let client = WebSocketClient(maxConnections: max(1, maxConnections),
     maxCommands: max(1, maxCommands), maxEvents: max(1, maxEvents),
     maxQueuedBytes: max(1, maxQueuedBytes), maxMessageBytes: max(1, maxMessageBytes),

@@ -1,6 +1,6 @@
 import std/[assertions, nativesockets]
 import relay/websocket
-import relay/bindings/websockets
+import relay/bindings/curl
 import relay/curl_wrap
 
 {.emit: """
@@ -24,20 +24,22 @@ block abi:
   doAssert socketSize() == sizeof(SocketHandle).csize_t
 
 block curlOwners:
-  initGlobal()
-  block:
-    var easy = initEasy()
-    easy = initEasy()
-    easy = default(Easy)
-    var list: Slist
-    list.addHeader("X-Test: first")
-    var replacement: Slist
-    replacement.addHeader("X-Test: second")
-    list = move replacement
-    var multi = initMulti()
-    multi = initMulti()
-    multi = default(Multi)
-  cleanupGlobal()
+  initCurl()
+  try:
+    block:
+      var easy = initEasy()
+      easy = initEasy()
+      easy = default(Easy)
+      var list: Slist
+      list.addHeader("X-Test: first")
+      var replacement: Slist
+      replacement.addHeader("X-Test: second")
+      list = move replacement
+      var multi = initMulti()
+      multi = initMulti()
+      multi = default(Multi)
+  finally:
+    cleanupCurl()
 
 block serviceOwnership:
   let client = newWebSocketClient()
@@ -80,4 +82,3 @@ block dropOwner:
   client.close()
 
 echo "WebSocket ABI, input and ownership contracts passed"
-echo "libcurl runtime version number: ", curl_version_info(CURLVERSION_FIRST).version_num

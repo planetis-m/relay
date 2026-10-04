@@ -3,7 +3,9 @@
 `relay/websocket` transports messages without JSON or application callbacks. One
 `WebSocketClient` owns one worker for multiple connections; HTTP retains its separate
 worker. Build with `--threads:on --mm:atomicArc` and a WebSocket-enabled libcurl 8.14+
-with matching development headers. Linux/libcurl 8.18.0 is verified.
+with matching development headers and thread-safe global initialization. These are
+build requirements; constructors do not probe versions or memory models.
+Linux/libcurl 8.18.0 is verified.
 
 ## Minimal public API
 
@@ -34,7 +36,7 @@ objects use `byref` so destruction never copies synchronization primitives.
 
 The text-only `newWebSocket(defaultTimeoutMs = 60_000, maxMessageBytes = 32 * 1024 * 1024,
 bypassProxy = false)` convenience owner exposes blocking `connect`, `send`, `receive`
-and `close`, using one service/connection. It raises `TimeoutError` (an `IOError`) for
+and `close`, using one client/connection. It raises `TimeoutError` (an `IOError`) for
 deadline expiry and `IOError` for transport/protocol errors, closing on those failures.
 Invalid caller URLs/text/size or repeated connect raise `ValueError` and preserve the
 existing connection. This convenience API has one caller and is not reentrant.
@@ -87,11 +89,13 @@ nonce. Text UTF-8 is validated after fragment reassembly; binary is represented
 explicitly. Ping payloads are echoed even while callers are idle. Close payload length,
 code and reason UTF-8 are validated. Libcurl owns masking and wire framing.
 
-HTTP and WebSockets share curl wrappers, synchronized counted global init/cleanup,
+HTTP and WebSockets share one curl binding and wrapper. Each client pairs global
+initialization with cleanup after releasing its handles; libcurl supplies the counting
+and synchronization. There is no Relay global lock or user counter. They also share
 transport error construction/classification/retry predicates and the wrapper wakeup primitive.
 Curl easy/multi status checks are defined once in `curl_wrap` and used by both workers. Easy's move hook
 clears moved-from storage before moving its error buffer; failed slist append preserves
-the prior owner. HTTP uses `HttpClient`/`newHttpClient`; `Relay`/`newRelay` remain compatibility aliases.
+the prior owner. HTTP uses `HttpClient`/`newHttpClient`; the old names are removed.
 HTTP public request APIs/defaults remain compatible. HTTP's queues
 retain their previous behavior; WebSocket limits do not impose a new HTTP queue policy.
 No generic executor/worker framework is introduced.

@@ -1,7 +1,7 @@
 # Package
 version = "1.1.0"
 author = "planetis"
-description = "Relay: parallel HTTP batching for Nim"
+description = "Relay: HTTP and persistent WebSocket clients for Nim"
 license = "MIT"
 srcDir = "src"
 
