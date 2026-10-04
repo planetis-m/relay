@@ -1,5 +1,5 @@
 import std/random
-import relay
+import relay/http
 
 proc main =
   let policy = initRetryPolicy(

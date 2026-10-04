@@ -1,4 +1,4 @@
-import relay
+import relay/http
 
 proc main =
   let client = newHttpClient(maxInFlight = 2)

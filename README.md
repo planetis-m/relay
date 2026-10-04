@@ -21,7 +21,7 @@ nimble install
 
 ## Quick Start (Blocking Batch)
 ```nim
-import relay
+import relay/http
 
 let client = newHttpClient(maxInFlight = 8)
 try:
@@ -41,7 +41,7 @@ finally:
 
 ## Quick Start (Blocking Single Request)
 ```nim
-import relay
+import relay/http
 
 let client = newHttpClient()
 try:
@@ -58,7 +58,7 @@ finally:
 
 Use this when your app has its own scheduling loop.
 ```nim
-import relay
+import relay/http
 
 let client = newHttpClient(maxInFlight = 16)
 try:
@@ -83,7 +83,7 @@ finally:
 
 ## API Reference
 
-HTTP APIs live in `relay/http` and are exported by `import relay`.
+Import `relay/http` for HTTP APIs.
 Persistent connection APIs live in `relay/websocket`.
 
 | Owner | Constructor | Purpose |
@@ -106,7 +106,6 @@ issues HTTP CONNECT; `connect` on `WebSocket` opens a persistent connection.
 | `relay/transport_errors` | Transport error construction, classification and retry predicates |
 | `relay/http` | HTTP worker, requests, batches and completions |
 | `relay/websocket` | Multi-connection worker and synchronous text connection |
-| `relay` | HTTP package exports |
 
 ### Core Types
 
@@ -129,7 +128,7 @@ issues HTTP CONNECT; `connect` on `WebSocket` opens a persistent connection.
 
 ### Status, Query, and Retry Helpers
 
-`import relay` exports the following helpers from its submodules:
+`import relay/http` exports the following helpers from its submodules:
 ```nim
 # relay/http_status: typed status codes and classifiers
 HttpCode, Http200..Http511, is1xx..is5xx, `$` # "404 Not Found"

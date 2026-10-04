@@ -1,4 +1,4 @@
-import relay
+import relay/http
 
 const
   UnreachableA = "http://127.0.0.1:1"

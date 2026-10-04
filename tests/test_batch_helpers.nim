@@ -1,4 +1,4 @@
-import relay
+import relay/http
 
 proc main =
   var batch: RequestBatch
