@@ -124,7 +124,7 @@ proc configureEasy(client: HttpClientObj; request: RequestWrap; easy: var Easy) 
   if request.body.len > 0:
     easy.setRequestBody(request.body)
 
-  var headerList: Slist
+  var headerList = Slist()
   for header in request.headers:
     headerList.addHeader(header.name & ": " & header.value)
   request.curlHeaders = headerList
@@ -140,7 +140,7 @@ proc configureEasy(client: HttpClientObj; request: RequestWrap; easy: var Easy) 
 
 proc completionFromCurl(client: var HttpClientObj; request: RequestWrap;
     curlCode: CURLcode): RequestResult =
-  result.response = newResponse(request)
+  result = (newResponse(request), noTransportError())
   try:
     client.multi.removeHandle(request.easy)
     if curlCode != CURLE_OK:
@@ -153,7 +153,6 @@ proc completionFromCurl(client: var HttpClientObj; request: RequestWrap;
         result.response.url = effective
       result.response.headers = parseHeaders(request.responseHeadersRaw)
       result.response.body = move request.responseBody
-      result.error = noTransportError()
   except CatchableError:
     result.error = newTransportError(teInternal, getCurrentExceptionMsg())
 
@@ -439,6 +438,7 @@ proc makeRequests*(client: HttpClient; batch: var RequestBatch): RequestResults 
     result.add(item)
 
 proc makeRequest*(client: HttpClient; request: sink RequestSpec): RequestResult =
+  result = (Response(), noTransportError())
   if client.clientIsBusy():
     raise newException(IOError, "makeRequest requires an idle client")
 

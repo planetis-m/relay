@@ -203,6 +203,7 @@ proc effectiveUrl*(easy: Easy): string =
   result = $urlPtr
 
 proc activeSocket*(easy: Easy): SocketHandle =
+  result = default(SocketHandle)
   easy.getInfo(CURLINFO_ACTIVESOCKET, result)
 
 proc recvFrame*(easy: Easy; buffer: pointer; size: csize_t;
@@ -230,10 +231,6 @@ proc handleKey*(easy: Easy): pointer {.inline.} =
 proc handleKey*(msg: CURLMsg): pointer {.inline.} =
   msg.easy_handle
 
-proc wakeup*(multi: CURLM) {.raises: [].} =
+proc wakeup*(multi: Multi) {.raises: [].} =
   ## Best-effort cross-thread wakeup while the caller keeps the handle alive.
-  if multi != nil:
-    discard curl_multi_wakeup(multi)
-
-proc wakeup*(multi: Multi) {.inline, raises: [].} =
-  multi.raw.wakeup()
+  discard curl_multi_wakeup(multi.raw)
