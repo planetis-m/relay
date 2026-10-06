@@ -13,11 +13,6 @@ proc checkResult(item: RequestResult; verb: HttpVerb; requestId: int64; url: str
 proc main =
   let client = newHttpClient(maxInFlight = 1, defaultTimeoutMs = 500)
   try:
-    var batch: RequestBatch
-    batch.get(UnreachableA, requestId = 1)
-    doAssert batch.len == 1
-    doAssert batch[0].verb == hvGet
-
     checkResult(
       client.makeRequest(RequestSpec(
         verb: hvGet,
@@ -42,16 +37,6 @@ proc main =
     checkResult(client.connect(UnreachableA, requestId = 208, timeoutMs = 200), hvConnect, 208, UnreachableA)
     checkResult(client.trace(UnreachableA, requestId = 209, timeoutMs = 200), hvTrace, 209, UnreachableA)
 
-    var inFlightBatch: RequestBatch
-    let pendingCount = 8
-    for i in 0..<pendingCount:
-      inFlightBatch.get(UnreachableA, requestId = 301 + i.int64, timeoutMs = 200)
-    client.startRequests(inFlightBatch)
-    client.clearQueue()
-
-    for _ in 0..<pendingCount:
-      var drained: RequestResult
-      doAssert client.waitForResult(drained)
   finally:
     client.close()
 

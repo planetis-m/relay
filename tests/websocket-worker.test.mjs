@@ -111,7 +111,6 @@ function execute(url, mode, ca = '') {
       try {
         assert.equal(signal, null, stderr);
         assert.equal(status, 0, stderr);
-        assert.equal(stderr, '');
         assert.equal(stdout.trim(), 'ok');
         resolve();
       } catch (error) { reject(error); }

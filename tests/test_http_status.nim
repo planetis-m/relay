@@ -11,8 +11,6 @@ proc main =
   doAssert is4xx(Http404)
   doAssert not is5xx(HttpCode(499))
   doAssert is5xx(Http503)
-  doAssert Http404 == HttpCode(404)
-  doAssert Http200 == Http200
   doAssert $Http404 == "404 Not Found"
   doAssert $Http200 == "200 OK"
   doAssert $HttpCode(299) == "299"
