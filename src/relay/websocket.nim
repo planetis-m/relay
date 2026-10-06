@@ -609,7 +609,7 @@ proc retrieveEvent(client: WebSocketClient; id: ConnectionId; item: var WebSocke
       wait(client.resultCond, client.lock)
     if conn.events.len > 0:
       item = conn.events.popFirst()
-      conn.queuedBytes -= item.message.data.len
+      dec conn.queuedBytes, item.message.data.len
       result = true
     elif conn.state == cnFinished:
       item = WebSocketEvent(connectionId: id, kind: weClosed, error: move conn.terminalError)
