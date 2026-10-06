@@ -52,12 +52,7 @@ type
     requests: seq[RequestSpec]
 
   RequestWrap = ref object
-    verb: HttpVerb
-    url: string
-    headers: HttpHeaders
-    body: string
-    requestId: int64
-    timeoutMs: int
+    spec: RequestSpec
     responseBody: string
     responseHeadersRaw: string
     easy: Easy
@@ -80,6 +75,7 @@ type
     queue: Deque[RequestWrap]
     inFlight: Table[pointer, RequestWrap]
     readyResults: Deque[RequestResult]
+    outstanding: int # Accepted requests, including results awaiting consumption.
   HttpClient* = ref HttpClientObj
     ## HTTP request worker with shared lifetime and completion-order results.
 
@@ -89,24 +85,21 @@ proc appendWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): 
     result = 0
   else:
     let destination = cast[ptr string](userdata)
-    if destination.isNil:
-      result = csize_t(total)
-    else:
-      let start = destination[].len
-      destination[].setLen(start + total)
-      copyMem(addr destination[][start], buffer, total)
-      result = csize_t(total)
+    let start = destination[].len
+    destination[].setLen(start + total)
+    copyMem(addr destination[][start], buffer, total)
+    result = csize_t(total)
 
 proc newResponse(request: RequestWrap): Response {.inline.} =
   Response(
     code: HttpCode(0),
-    url: request.url,
+    url: request.spec.url,
     headers: @[],
     body: "",
     request: RequestInfo(
-      verb: request.verb,
-      url: move request.url,
-      requestId: request.requestId
+      verb: request.spec.verb,
+      url: move request.spec.url,
+      requestId: request.spec.requestId
     )
   )
 
@@ -116,23 +109,24 @@ proc storeCompletionLocked(client: var HttpClientObj; item: sink RequestResult) 
 
 proc configureEasy(client: HttpClientObj; request: RequestWrap; easy: var Easy) =
   easy.reset()
-  easy.setUrl(request.url)
+  easy.setUrl(request.spec.url)
   easy.setHttpVersion2Tls()
 
-  easy.setMethod($request.verb)
-  easy.setNoBody(request.verb == hvHead)
-  if request.body.len > 0:
-    easy.setRequestBody(request.body)
+  easy.setMethod($request.spec.verb)
+  easy.setNoBody(request.spec.verb == hvHead)
+  if request.spec.body.len > 0:
+    easy.setRequestBody(request.spec.body)
 
   var headerList = Slist()
-  for header in request.headers:
+  for header in request.spec.headers:
     headerList.addHeader(header.name & ": " & header.value)
   request.curlHeaders = headerList
   easy.setHeaders(request.curlHeaders)
 
   easy.setWriteCallback(appendWriteCb, cast[pointer](addr request.responseBody))
   easy.setHeaderCallback(appendWriteCb, cast[pointer](addr request.responseHeadersRaw))
-  easy.setTimeoutMs(if request.timeoutMs > 0: request.timeoutMs else: client.defaultTimeoutMs)
+  easy.setTimeoutMs(if request.spec.timeoutMs > 0: request.spec.timeoutMs
+    else: client.defaultTimeoutMs)
   easy.setConnectTimeoutMs(DefaultConnectTimeoutMs)
   easy.setSslVerify(true, true)
   easy.setAcceptEncoding("gzip, deflate")
@@ -169,20 +163,6 @@ proc flushFailedLocked(client: var HttpClientObj; error: TransportError) =
     client.availableEasy.add(move req.easy)
     client.storeCompletionLocked((newResponse(req), error))
   client.inFlight.clear()
-
-proc runEasyLoop(client: var HttpClientObj): bool =
-  result = true
-  try:
-    discard client.multi.perform()
-    discard client.multi.poll(MultiWaitMaxMs)
-  except IOError:
-    let error = newTransportError(teInternal, getCurrentExceptionMsg())
-    acquire(client.lock)
-    client.flushFailedLocked(error)
-    client.state = csAborting
-    signal(client.wakeCond)
-    release(client.lock)
-    result = false
 
 proc processDoneMessages(client: var HttpClientObj) =
   var msg: CURLMsg
@@ -247,26 +227,37 @@ proc waitForWorkOrClose(client: var HttpClientObj): bool =
   release(client.lock)
 
 proc workerMain(client: ptr HttpClientObj) {.thread, raises: [].} =
-  while true:
-    dispatchQueuedRequests(client[])
+  try:
+    while true:
+      dispatchQueuedRequests(client[])
 
-    acquire(client.lock)
-    let hasInflight = client.inFlight.len > 0
-    let shouldAbort = client.state == csAborting
-    release(client.lock)
-
-    if shouldAbort:
       acquire(client.lock)
-      client[].flushFailedLocked(newTransportError(teCanceled, "Canceled in abort"))
+      let hasInflight = client.inFlight.len > 0
+      let shouldAbort = client.state == csAborting
       release(client.lock)
-      break
 
-    if hasInflight:
-      if not runEasyLoop(client[]):
+      if shouldAbort:
+        acquire(client.lock)
+        client[].flushFailedLocked(newTransportError(teCanceled, "Canceled in abort"))
+        release(client.lock)
         break
-      processDoneMessages(client[])
-    elif not waitForWorkOrClose(client[]):
-      break
+
+      if hasInflight:
+        let running = client.multi.perform()
+        processDoneMessages(client[])
+        acquire(client.lock)
+        let shouldPoll = running > 0 and client.state != csAborting and
+          (client.queue.len == 0 or client.availableEasy.len == 0)
+        release(client.lock)
+        if shouldPoll: discard client.multi.poll(MultiWaitMaxMs)
+      elif not waitForWorkOrClose(client[]):
+        break
+  except IOError:
+    let error = newTransportError(teInternal, getCurrentExceptionMsg())
+    acquire(client.lock)
+    client.state = csAborting
+    client[].flushFailedLocked(error)
+    release(client.lock)
 
   acquire(client.lock)
   client.state = csStopped
@@ -277,7 +268,7 @@ proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     maxRedirects = 10): HttpClient =
   ## Call close or abort before releasing the client.
   let client = HttpClient(defaultTimeoutMs: max(1, defaultTimeoutMs),
-    maxRedirects: max(0, maxRedirects))
+    maxRedirects: max(0, maxRedirects), outstanding: 0)
   initCurl()
   initLock(client.lock)
   initCond(client.wakeCond)
@@ -313,6 +304,7 @@ proc shutdown(client: var HttpClientObj; aborting: static[bool]) =
     reset(client.queue)
     reset(client.inFlight)
     reset(client.readyResults)
+    client.outstanding = 0
     reset(client.multi)
     cleanupCurl()
     deinitCond(client.resultCond)
@@ -328,12 +320,13 @@ proc abort*(client: HttpClient) =
 
 proc hasRequests*(client: HttpClient): bool =
   acquire(client.lock)
-  result = client.queue.len > 0 or client.inFlight.len > 0
+  result = client.outstanding > client.readyResults.len
   release(client.lock)
 
 proc numInFlight*(client: HttpClient): int =
+  ## Requests being configured, transferred or finalized; excludes queued work and ready results.
   acquire(client.lock)
-  result = client.inFlight.len
+  result = client.outstanding - client.readyResults.len - client.queue.len
   release(client.lock)
 
 proc queueLen*(client: HttpClient): int =
@@ -351,24 +344,8 @@ proc clearQueue*(client: HttpClient) =
 
 proc clientIsBusy(client: HttpClient): bool =
   acquire(client.lock)
-  result =
-    client.queue.len > 0 or
-    client.inFlight.len > 0 or
-    client.readyResults.len > 0
+  result = client.outstanding != 0
   release(client.lock)
-
-proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
-  RequestWrap(
-    verb: request.verb,
-    url: move request.url,
-    headers: move request.headers,
-    body: move request.body,
-    requestId: request.requestId,
-    timeoutMs: request.timeoutMs,
-    responseBody: "",
-    responseHeadersRaw: "",
-    easy: default(Easy)
-  )
 
 proc startRequests*(client: HttpClient; batch: var RequestBatch) =
   assert not client.closed, "HTTP client is closed"
@@ -378,7 +355,13 @@ proc startRequests*(client: HttpClient; batch: var RequestBatch) =
       raise newException(IOError, "HTTP worker stopped")
 
     for request in batch.requests.mitems:
-      client.queue.addLast(wrapRequest(move request))
+      client.queue.addLast(RequestWrap(
+        spec: move request,
+        responseBody: "",
+        responseHeadersRaw: "",
+        easy: default(Easy)
+      ))
+      inc client.outstanding
     batch.requests.setLen(0)
 
     signal(client.wakeCond)
@@ -393,7 +376,13 @@ proc startRequest*(client: HttpClient; request: sink RequestSpec) =
     if client.state != csRunning:
       raise newException(IOError, "HTTP worker stopped")
 
-    client.queue.addLast(wrapRequest(request))
+    client.queue.addLast(RequestWrap(
+      spec: request,
+      responseBody: "",
+      responseHeadersRaw: "",
+      easy: default(Easy)
+    ))
+    inc client.outstanding
 
     signal(client.wakeCond)
     client.multi.wakeup()
@@ -408,6 +397,7 @@ proc waitForResult*(client: HttpClient; outResult: var RequestResult): bool =
 
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
+    dec client.outstanding
     result = true
   else:
     result = false
@@ -417,6 +407,7 @@ proc pollForResult*(client: HttpClient; outResult: var RequestResult): bool =
   acquire(client.lock)
   if client.readyResults.len > 0:
     outResult = client.readyResults.popFirst()
+    dec client.outstanding
     result = true
   else:
     result = false

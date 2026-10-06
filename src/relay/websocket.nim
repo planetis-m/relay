@@ -425,7 +425,7 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
       discard client.multi.poll(20, fds)
   except CatchableError:
     let error = newTransportError(teInternal, getCurrentExceptionMsg())
-    var commands: Deque[Command]
+    var commands = Deque[Command]()
     acquire(client.lock)
     client.state = csAborting
     swap(commands, client.commands)

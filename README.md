@@ -258,6 +258,8 @@ proc queueLen*(client: HttpClient): int
 ```
 
 - `clearQueue` cancels queued (not yet in-flight) requests.
+- `numInFlight` includes request setup and completion processing, so active work
+  remains visible between queue removal and result publication.
 - in-flight requests continue unless you call `abort`.
 
 ## Behavioral Notes
