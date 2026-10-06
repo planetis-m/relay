@@ -105,7 +105,6 @@ proc completion(client: var WebSocketClientObj; cmd: Command; error = TransportE
   acquire(client.lock)
   client.results.addLast(WebSocketResult(connectionId: cmd.connectionId,
     operationId: cmd.operationId, error: error))
-  broadcast(client.resultCond)
   release(client.lock)
 
 proc finish(client: var WebSocketClientObj; conn: Connection;
@@ -128,7 +127,6 @@ proc finish(client: var WebSocketClientObj; conn: Connection;
   acquire(client.lock)
   conn.mailbox.terminal = true
   conn.mailbox.terminalError = error
-  broadcast(client.resultCond)
   release(client.lock)
 
 proc headerCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
@@ -184,7 +182,6 @@ proc publish(client: var WebSocketClientObj; conn: Connection) =
     inc conn.mailbox.bytes, conn.incoming.data.len
     conn.mailbox.events.addLast(WebSocketEvent(connectionId: conn.mailbox.id,
       kind: weMessage, message: move conn.incoming))
-    broadcast(client.resultCond)
   finally:
     release(client.lock)
 
@@ -410,7 +407,9 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
           inc kept
       connections.setLen(kept)
       acquire(client.lock)
-      # Timed consumers recheck deadlines here until std/locks supports timed waits.
+      # All results and mailbox events are published by this worker. Notify once
+      # per turn, before polling, so consumers can drain data and recheck event
+      # deadlines until std/locks supports timed waits.
       broadcast(client.resultCond)
       let done = client.state in {csStopping, csAborting} and
         connections.len == 0 and client.commands.len == 0
@@ -434,6 +433,7 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
   finally:
     acquire(client.lock)
     client.state = csStopped
+    # Also release every waiter when a turn exits through the exception path.
     broadcast(client.resultCond)
     release(client.lock)
 
