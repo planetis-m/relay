@@ -1,6 +1,6 @@
 # Validation report
 
-No confirmed supported-API runtime defect was found. Required safety invariants and
+No runtime defect was found under the documented API constraints. Required safety invariants and
 bounded liveness goals pass under the stated caller and fairness assumptions.
 The [README](README.md) gives the models, bounds and direct commands.
 
@@ -29,7 +29,8 @@ also cover message/byte/control limits, partial-write exclusion and close deadli
 Liveness covers requested worker shutdown, connection close/cancel completion,
 operation publication/consumption, event/disposal waits and individual HTTP result
 callers. Worker and deadline fairness establish shutdown/publication independently
-of consumers. Consumption adds caller fairness; HTTP owner discard adds join fairness.
+of consumers. Consumption adds caller fairness; HTTP operation retirement during
+owner shutdown also assumes eventual join.
 Send/close timeout checks require no peer cooperation or successful transmission.
 
 The largest two-waiter check completed in **0.36 seconds** using approximately
@@ -41,7 +42,7 @@ and remains incomplete; only the documented reduced variants are validated.
 
 **HTTP abort can discard unpublished queued work.** A submission can race the
 worker's empty snapshot and owner abort. The worker can then leave
-[waitForWorkOrClose](../src/relay/http.nim:213) without publishing that request;
+[waitForWorkOrClose](../src/relay/http.nim#L213) without publishing that request;
 owner join discards it. This matches the shutdown contract: other callers finish
 before owner shutdown, which also discards unread results. The diagnostic
 `StrictCompletionInv` fails because it requires a stronger publication promise.
@@ -54,6 +55,7 @@ Blocking convenience helpers still require exclusive access. HTTP `numInFlight`
 includes private configuration/finalization, not just the in-flight table;
 `clearQueue` leaves active work alone. Caller `requestId` values need not be unique,
 and transfer completion can reverse admission order.
+HTTP timeouts exclude queue waiting; WebSocket operation deadlines include it.
 
 **Waiter progress needs individual goals and fairness.** With two callers,
 `[]<>(all callers idle)` can fail while each caller repeatedly returns, because their
@@ -78,9 +80,9 @@ The WebSocket worker's `cnFinished` service arm is unreachable at its current gu
 call site and is defensive. Lifecycle PC 3 is reserved bookkeeping.
 
 **The apparent duplicate state serves different roles.** Outstanding work and queued
-bytes are cached accounting checked against their contents. Worker-stopped versus
-owner-joined, retained mailbox versus connection phase, and private handle ownership
-versus table registration must remain distinct. Publication/history counters and
+bytes are cached accounting checked against their contents. Worker termination and
+owner join, mailbox retention and connection phase, and private handle ownership
+and table registration are separate states. Publication/history counters and
 owner-abort provenance are model instrumentation.
 
 Negative controls fail as expected: shutdown without scheduling fairness, close

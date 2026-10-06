@@ -80,7 +80,7 @@ releases acquired resources and propagates the exception. Each accepted operatio
 completes once. Curl parses URLs; malformed URLs, credentials
 or schemes other than ws/wss fail the connect operation.
 Check `error.kind == teNone` for success; peer/local close reports
-`teCanceled`. Use one result consumer and one event consumer
+`teCanceled`. Use one result consumer per client and one receive/event consumer
 per connection. Submission and retrieval are synchronized while the worker is active.
 Submission, cancellation and connection close require an open client. For all operations,
 URLs must contain no NUL or fragments. Sent messages must fit `maxMessageBytes`, and

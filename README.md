@@ -299,11 +299,10 @@ let client = newWebSocketClient()
 try:
   let opened = client.connect("wss://example.com/socket")
   if opened.error.kind == teNone:
-    let sent = client.send(opened.connectionId, "hello")
-    if sent.error.kind == teNone:
-      let item = client.receive(opened.connectionId)
-      if item.kind == wrMessage:
-        echo item.message.data
+    discard client.send(opened.connectionId, "hello")
+    let item = client.receive(opened.connectionId)
+    if item.kind == wrMessage:
+      echo item.message.data
 finally:
   client.close()
 ```
@@ -312,6 +311,10 @@ The same client supports multiple connections and incremental operations. Blocki
 connect/send require an idle operation pipeline and exclusive submission/result access,
 like HTTP's blocking helpers. See [WebSockets](docs/WEBSOCKETS.md) for limits, timeouts
 and lifecycle, or [the runnable example](examples/websocket_echo.nim).
+
+- Consume terminal events or call `closeConnection` to free slots counted by `maxConnections`.
+- Use one result consumer per client and one receive/event consumer per connection.
+- Call `close` / `abort` on the creating thread after other callers finish.
 
 Local WebSocket checks require Node.js and OpenSSL:
 ```sh
