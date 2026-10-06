@@ -123,6 +123,9 @@ returns false. Event waits return false on timeout or unknown/drained IDs.
   close. `abort` cancels work and joins without waiting for close handshakes.
 - A close handshake sends one CLOSE frame and uses a deadline set when closing begins;
   a peer reply does not restart it. Cancellation takes precedence over a close request.
+- Transport handles, pending operations and frame buffers belong to the worker and
+  are released when it removes the finished connection. Retained terminal events
+  keep only shared receive queues and status alive.
 
 TLS verifies trust and hostname. `proxy` overrides curl's environment proxy;
 `bypassProxy` disables it. `caInfo` selects a CA file. Ping/close handling and received

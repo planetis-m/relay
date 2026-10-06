@@ -52,7 +52,7 @@ type
     cnConnecting, cnOpen, cnClosing, cnFinished
   ConnectionFlag = enum
     cfAttached, cfCloseSent, cfPeerClosed, cfFrameStarted, cfIncomingActive
-  Connection = ref object
+  Mailbox = ref object
     # Shared under client.lock; only the worker changes the connection phase.
     id: ConnectionId
     state: ConnectionState
@@ -60,12 +60,14 @@ type
     terminalError: TransportError
     events: Deque[WebSocketEvent]
     queuedBytes: int
-    # Worker-only transport, pending operations and frame processing.
+  Connection = ref object
+    # Owned only by the worker; stable storage for curl's handshake callback.
+    mailbox: Mailbox
     easy: Easy
     headers: Slist
     handshake: Handshake
     flags: set[ConnectionFlag]
-    connectCommand: Command # Pending connect; the worker queue carries only its ID.
+    connectCommand: Command
     sends: Deque[Command]
     offset: int
     incoming: WebSocketMessage
@@ -82,7 +84,7 @@ type
     multi: Multi
     commands: Deque[Command]
     results: Deque[WebSocketResult]
-    connections: seq[Connection] # Includes queued attempts and retained terminal events.
+    connections: seq[Mailbox] # Queued attempts and retained terminal events.
     proxy, caInfo: string
     nextConnection, nextOperation: int64
     outstanding: int # Accepted operations, including results awaiting consumption.
@@ -97,7 +99,7 @@ proc `==`*(a, b: OperationId): bool {.borrow.}
 proc timeout(client: WebSocketClientObj; timeoutMs: int): int =
   if timeoutMs > 0: min(timeoutMs, cint.high.int) else: client.defaultTimeoutMs
 
-proc connection(client: WebSocketClientObj; id: ConnectionId): Connection =
+proc connection(client: WebSocketClientObj; id: ConnectionId): Mailbox =
   result = nil
   for item in client.connections:
     if item.id == id: return item
@@ -110,8 +112,8 @@ proc completion(client: var WebSocketClientObj; cmd: sink Command; error = Trans
 
 proc finish(client: var WebSocketClientObj; conn: Connection;
     error: TransportError) =
-  if conn.state == cnFinished: return
-  if conn.state == cnConnecting:
+  if conn.mailbox.state == cnFinished: return
+  if conn.mailbox.state == cnConnecting:
     client.completion(move conn.connectCommand, error)
   while conn.sends.len > 0:
     client.completion(conn.sends.popFirst(), error)
@@ -123,10 +125,9 @@ proc finish(client: var WebSocketClientObj; conn: Connection;
     conn.flags.excl(cfAttached)
   conn.easy = default(Easy)
   reset(conn.headers)
-  conn.incoming.data = ""
   acquire(client.lock)
-  conn.terminalError = error
-  conn.state = cnFinished
+  conn.mailbox.terminalError = error
+  conn.mailbox.state = cnFinished
   release(client.lock)
 
 proc headerCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): csize_t {.cdecl.} =
@@ -176,23 +177,23 @@ proc configure(client: var WebSocketClientObj; conn: Connection) =
 proc publish(client: var WebSocketClientObj; conn: Connection) =
   acquire(client.lock)
   try:
-    if conn.events.len >= client.maxEvents or
-        conn.incoming.data.len > client.maxQueuedBytes - conn.queuedBytes:
+    if conn.mailbox.events.len >= client.maxEvents or
+        conn.incoming.data.len > client.maxQueuedBytes - conn.mailbox.queuedBytes:
       raise newException(IOError, "WebSocket event queue overflow")
-    inc conn.queuedBytes, conn.incoming.data.len
-    conn.events.addLast(WebSocketEvent(connectionId: conn.id,
+    inc conn.mailbox.queuedBytes, conn.incoming.data.len
+    conn.mailbox.events.addLast(WebSocketEvent(connectionId: conn.mailbox.id,
       kind: weMessage, message: move conn.incoming))
   finally:
     release(client.lock)
 
 proc requestClose(client: var WebSocketClientObj; conn: Connection; payload: sink string = "") =
-  if conn.state == cnOpen:
+  if conn.mailbox.state == cnOpen:
     if conn.controls.len >= 8:
       raise newException(IOError, "WebSocket control queue overflow")
     conn.controls.addLast((payload, CURLWS_CLOSE))
     conn.closeDeadline = getMonoTime() + initDuration(milliseconds = client.closeTimeoutMs)
     acquire(client.lock)
-    conn.state = cnClosing
+    conn.mailbox.state = cnClosing
     release(client.lock)
 
 proc readFrames(client: var WebSocketClientObj; conn: Connection): CURLcode =
@@ -273,7 +274,7 @@ proc writeFrames(client: var WebSocketClientObj; conn: Connection): CURLcode =
   # Finish either partially sent frame before switching between data/control queues.
   result = CURLE_OK
   if conn.sends.len > 0 and conn.controlOffset == 0 and
-      (cfFrameStarted in conn.flags or (conn.state != cnClosing and conn.controls.len == 0)):
+      (cfFrameStarted in conn.flags or (conn.mailbox.state != cnClosing and conn.controls.len == 0)):
     let cmd {.cursor.} = conn.sends.peekFirst()
     result = conn.writeData(cmd)
     if result == CURLE_OK and conn.offset == cmd.message.data.len:
@@ -298,8 +299,9 @@ proc processCommands(client: var WebSocketClientObj; active: var seq[Connection]
     case cmd.kind
     of wcConnect:
       acquire(client.lock)
-      let conn = client.connection(cmd.connectionId)
+      let mailbox = client.connection(cmd.connectionId)
       release(client.lock)
+      let conn = Connection(mailbox: mailbox, connectCommand: move cmd)
       active.add(conn)
       if getMonoTime() >= conn.connectCommand.deadline:
         client.finish(conn, newTransportError(teTimeout, "WebSocket connect timed out"))
@@ -310,12 +312,12 @@ proc processCommands(client: var WebSocketClientObj; active: var seq[Connection]
           client.finish(conn, newTransportError(teNetwork,
             "WebSocket connect failed: " & getCurrentExceptionMsg()))
     of wcSend:
-      var conn: Connection
+      var conn {.cursor.}: Connection
       for item in active:
-        if item.id == cmd.connectionId:
+        if item.mailbox.id == cmd.connectionId:
           conn = item
           break
-      if conn == nil or conn.state != cnOpen:
+      if conn == nil or conn.mailbox.state != cnOpen:
         client.completion(cmd, newTransportError(teCanceled, "WebSocket connection unavailable"))
       else:
         conn.sends.addLast(cmd)
@@ -326,7 +328,7 @@ proc upgrades(client: var WebSocketClientObj; connections: seq[Connection]) =
   while client.multi.tryInfoRead(msg, queued):
     if msg.msg == CURLMSG_DONE:
       for conn in connections:
-        if conn.state == cnConnecting and conn.easy.handleKey() == msg.handleKey():
+        if conn.mailbox.state == cnConnecting and conn.easy.handleKey() == msg.handleKey():
           if getMonoTime() >= conn.connectCommand.deadline:
             client.finish(conn, newTransportError(teTimeout, "WebSocket connect timed out"))
           elif msg.data.result != CURLE_OK:
@@ -337,20 +339,20 @@ proc upgrades(client: var WebSocketClientObj; connections: seq[Connection]) =
             client.finish(conn, newTransportError(teProtocol, "WebSocket upgrade refused"))
           else:
             acquire(client.lock)
-            conn.state = cnOpen
+            conn.mailbox.state = cnOpen
             release(client.lock)
             client.completion(move conn.connectCommand)
           break
 
 proc serviceConnection(client: var WebSocketClientObj; conn: Connection; state: ClientState) =
   acquire(client.lock)
-  let request = conn.request
+  let request = conn.mailbox.request
   release(client.lock)
   if request == srCancel or state == csAborting or
-      (state == csStopping and conn.state == cnConnecting):
+      (state == csStopping and conn.mailbox.state == cnConnecting):
     client.finish(conn, newTransportError(teCanceled, "WebSocket canceled"))
   else:
-    case conn.state
+    case conn.mailbox.state
     of cnConnecting:
       if request == srClose:
         client.finish(conn, newTransportError(teCanceled, "WebSocket closed"))
@@ -373,7 +375,7 @@ proc serviceConnection(client: var WebSocketClientObj; conn: Connection; state: 
         if code != CURLE_OK and code != CURLE_AGAIN:
           client.finish(conn, newTransportError(classifyTransportError(code),
             "WebSocket transfer failed: " & $curl_easy_strerror(code), code.int))
-        elif conn.state == cnClosing and ({cfPeerClosed, cfCloseSent} <= conn.flags or
+        elif conn.mailbox.state == cnClosing and ({cfPeerClosed, cfCloseSent} <= conn.flags or
             getMonoTime() >= conn.closeDeadline):
           let reason = if cfPeerClosed in conn.flags:
             "Peer closed the WebSocket connection"
@@ -396,18 +398,18 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
       release(client.lock)
       var kept = 0
       for i in 0..<active.len:
-        let conn = active[i]
-        if conn.state != cnFinished:
+        let conn {.cursor.} = active[i]
+        if conn.mailbox.state != cnFinished:
           try:
             client[].serviceConnection(conn, state)
-            if conn.state in {cnOpen, cnClosing}:
+            if conn.mailbox.state in {cnOpen, cnClosing}:
               var fd = curl_waitfd(fd: conn.easy.activeSocket(), events: CURL_WAIT_POLLIN)
               if conn.sends.len > 0 or conn.controls.len > 0:
                 fd.events = fd.events or CURL_WAIT_POLLOUT
               fds.add(fd)
           except CatchableError:
             client[].finish(conn, newTransportError(teProtocol, getCurrentExceptionMsg()))
-        if conn.state != cnFinished:
+        if conn.mailbox.state != cnFinished:
           if kept != i: swap(active[kept], active[i])
           inc kept
       active.setLen(kept)
@@ -424,16 +426,21 @@ proc workerMain(client: ptr WebSocketClientObj) {.thread.} =
   except CatchableError:
     let error = newTransportError(teInternal, getCurrentExceptionMsg())
     var commands: Deque[Command]
-    var retained: seq[Connection]
     acquire(client.lock)
     client.state = csAborting
     swap(commands, client.commands)
-    retained = client.connections
     release(client.lock)
     while commands.len > 0:
       let cmd = commands.popFirst()
-      if cmd.kind == wcSend: client[].completion(cmd, error)
-    for conn in retained: client[].finish(conn, error)
+      client[].completion(cmd, error)
+    for conn in active: client[].finish(conn, error)
+    acquire(client.lock)
+    # Queued connects have shared state but no worker transport yet.
+    for mailbox in client.connections:
+      if mailbox.state != cnFinished:
+        mailbox.terminalError = error
+        mailbox.state = cnFinished
+    release(client.lock)
   finally:
     acquire(client.lock)
     client.state = csStopped
@@ -518,10 +525,8 @@ proc enqueue(client: var WebSocketClientObj; command: sink Command):
   cmd.operationId = OperationId(client.nextOperation)
   result = (cmd.connectionId, cmd.operationId)
   if cmd.kind == wcConnect:
-    client.connections.add(Connection(id: cmd.connectionId, connectCommand: move cmd))
-    client.commands.addLast(Command(kind: wcConnect, connectionId: result.connectionId))
-  else:
-    client.commands.addLast(move cmd)
+    client.connections.add(Mailbox(id: cmd.connectionId))
+  client.commands.addLast(move cmd)
   client.multi.wakeup()
 
 proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
