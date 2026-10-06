@@ -73,9 +73,12 @@ kind. The outer worker catches IOError, not arbitrary Defects/memory faults.
 
 HTTP blocking helpers check idle state without reserving exclusive access. Concurrent
 submission/consumption can violate their result-count assumptions; exclusivity is a
-modeled caller constraint. WebSocket explicitly documents one result consumer. HTTP's
-multiple-blocking-consumer semantics are unclear in its docs; the single-waiter model
-cannot settle support or starvation under repeated signal calls.
+modeled caller constraint. WebSocket explicitly documents one result consumer. HTTP raw
+waitForResult/pollForResult callers compete for one FIFO under the client lock;
+signals do not reserve results for a caller. The two-waiter model and runtime check
+below cover this behavior. A caller can remain waiting if its competitor consumes
+all available results; neither FIFO distribution among callers nor per-request ownership
+is promised by these retrieval functions.
 
 WebSocket cancellation is **TRACED** in
 [serviceConnection](../src/relay/websocket.nim:347) and
@@ -127,8 +130,8 @@ reduced scenario leaves their maps equal to zero; this does not justify deleting
 implementation fields.
 
 Limits include finite identities, abstract failures, no curl/OS proof, ARC safety,
-constructor rollback, byte parsing, TLS, retry correctness, exact error kinds, multiple
-HTTP waiters or wall-clock guarantees. Progress relies on stated fairness: an unscheduled
+constructor rollback, byte parsing, TLS, retry correctness, exact error kinds, more than
+two HTTP waiters or wall-clock guarantees. Progress relies on stated fairness: an unscheduled
 worker, nonadvancing transfer deadline or unwilling consumer can stall independently.
 
 Initial safety validation on 2026-10-06 used `tlanif` from PATH, with source audited at
@@ -144,6 +147,8 @@ sequential-reference and `--jobs:4` compiled-parallel exploration, with cap 400,
 | WebSocket duplex, restrictions in README | Pass | 166,938 |
 | HTTP default lifecycle invariant, one handle | Pass, including owner-abort exception | 5,859 |
 | HTTP default lifecycle invariant, two handles | Pass, including owner-abort exception | 7,803 |
+| HTTP two result waiters, one handle | Pass, including final broadcast to both callers | 10,757 |
+| HTTP two result waiters, two handles | Pass, including final broadcast to both callers | 14,205 |
 | HTTP diagnostic StrictCompletionInv | Fails stronger-than-contract abort policy | 8-state shortest counterexample |
 
 Direct reachability checks used `(check (not WitnessName.0.))`. Their expected
@@ -156,6 +161,9 @@ counterexamples show reachability, not implementation failures:
 | WitnessTransferOutOfOrder | HTTP one handle | Absent, all 5,859 states explored |
 | WitnessTransferOutOfOrder | HTTP two handles | Reachable, 13-state trace; second request finalizing while first remains in flight |
 | WitnessUnexpectedStoppedPending | HTTP one handle | Absent, all 5,859 states explored; no unpublished work at stop without owner abort |
+| WitnessTwoWaitersAsleep | HTTP two waiters, one handle | Reachable, 3-state trace; both wait on the shared result condition |
+| WitnessTwoWaitersAwake | HTTP two waiters, one handle | Reachable, 5-state trace |
+| WitnessStolenResult | HTTP two waiters, one handle | Reachable, 5-state trace; another consumer takes the signaled result before the awakened caller rechecks |
 
 An unrestricted two-connection WebSocket witness exploration exceeded the 400,000-state
 cap and is **incomplete**. It supplies no verification claim. The documented reduced
@@ -181,8 +189,10 @@ No selected goal was reported vacuous, and no state lacked a fair continuation.
 | WebSocket reuse | 213,205 | 856,973 | GoalShutdown, GoalTerminal, GoalPublished, GoalCompletions |
 | WebSocket duplex | 166,938 | 599,579 | GoalShutdown, GoalTerminal, GoalPublished, GoalCompletions |
 | WebSocket frames/close | 58,180 | 337,514 | GoalClose, GoalSends |
-| HTTP, one handle | 5,859 | 19,184 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait |
-| HTTP, two handles | 7,803 | 25,904 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait |
+| HTTP, one handle, one waiter | 5,859 | 19,184 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait |
+| HTTP, two handles, one waiter | 7,803 | 25,904 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait |
+| HTTP, one handle, two waiters | 10,757 | 42,829 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait1, GoalResultWait2 |
+| HTTP, two handles, two waiters | 14,205 | 56,421 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait1, GoalResultWait2 |
 
 Fairness was selected separately for different guarantees; assuming consumers run
 was not used to establish shutdown or publication:
@@ -195,8 +205,9 @@ was not used to establish shutdown or publication:
 | Frames GoalClose | FairCancel, FairClose, FairClock, FairFinish |
 | Frames GoalSends | FairSendClock |
 | HTTP GoalShutdown, GoalDelivery | FairWorker, FairNetwork |
-| HTTP GoalOperations | FairWorker, FairNetwork, FairConsumer, FairOwner |
-| HTTP GoalResultWait, either handle bound | FairWorker, FairNetwork, FairConsumer |
+| HTTP GoalOperations, one waiter | FairWorker, FairNetwork, FairConsumer, FairOwner |
+| HTTP GoalResultWait, one waiter, either handle bound | FairWorker, FairNetwork, FairConsumer |
+| HTTP GoalOperations, GoalResultWait1, GoalResultWait2, two waiters | FairWorker, FairNetwork, FairConsumer1, FairConsumer2, FairOwner |
 
 The README contains direct commands; its same reuse/duplex restrictions and HTTP
 two-handle change reproduce these variants. `GoalPublished` separates WebSocket
@@ -216,6 +227,31 @@ promise fairness for each branch; it suffices for the checked finite graphs.
 that a peer reads or replies. No proof establishes wall-clock bounds or production
 scheduler behavior.
 
+Adding a second HTTP waiter keeps the integrated model tractable; no new model or
+larger state cap was needed. The largest new compiled check, covering operations and
+both individual waiter goals with two handles, completed in **0.36 s** at **23,644 KiB**
+peak RSS (about **23 MiB**), exit 0. This is one local release measurement, excluding
+compilation, rather than a performance guarantee. Reproduce after setting both bounds:
+
+```sh
+/usr/bin/time -f 'elapsed=%e s peak_rss=%M KiB exit=%x' tlanif --max-states:400000 --live:GoalOperations,GoalResultWait1,GoalResultWait2 --fair:FairWorker,FairNetwork,FairConsumer1,FairConsumer2,FairOwner models/http_lifecycle.nif
+```
+
+Waiter state is now a map; the default one-caller graph retains exactly the old
+state/edge counts. Each completion wakes one arbitrary sleeper, whereas final worker
+exit wakes all. Two publications under the same lock wake both possible sleepers;
+the model therefore explicitly restricts this abstraction to at most two callers.
+Consumer helpers are expanded under a local caller binder, preserving one shared
+implementation of consumption/recheck and separate scheduling assumptions.
+
+The expanded model exposed two overly strong/weak interpretations of waiter progress.
+`[]<>(all callers idle)` can fail while every caller repeatedly returns, because
+their next calls overlap. The required checks select separate goals, establishing
+each caller's progress without requiring simultaneous idleness. Conversely, weak
+fairness of the combined consumer action permits one caller to starve while the
+other repeatedly returns after worker failure. Individual fairness groups exclude
+that scheduling behavior. These are modeling/assumption issues, not runtime defects.
+
 Negative controls were also checked directly:
 
 | Invocation change | Expected and observed result |
@@ -224,6 +260,8 @@ Negative controls were also checked directly:
 | Frames GoalClose without FairClock, retaining FairCancel/FairClose/FairFinish | Exit 3; closing with a partial CLOSE can remain without expiry |
 | WebSocket GoalWaiters with all five lifecycle fairness groups | Exit 3; running-client result wait can wake and re-sleep forever with no future results |
 | HTTP GoalShutdown with FairWorker/FairNetwork and cap 10 | Exit 4; incomplete, no liveness conclusion |
+| HTTP two waiters, individual goals with only aggregate FairConsumer (plus FairWorker/FairNetwork/FairOwner) | Exit 3; either caller can starve while the other keeps returning after worker failure |
+| HTTP two waiters, GoalWaitersTogether with individual caller fairness | Exit 3; repeated calls can overlap forever despite each caller returning |
 
 Failure witnesses were reference-validated by Tlanif. These failures are expected
 assumption/contract diagnostics, not supported-API defects. Required goals exposed
@@ -238,7 +276,7 @@ src/relay/http.nim
 src/relay/websocket.nim
 566a2aeb21fe8245467558c9519f358b74cadff85ad5a1b744ac061c83b094d3
 models/http_lifecycle.nif
-b7f8f8554c6ab2a728573ef4f60dd9f3e01b8d008600b9510a562579e6820c7b
+bdbe3198faa6b93f81330133bc495d3dae0333870d7a3b2ac66b8544ac55cad9
 models/websocket_lifecycle.nif
 f5c8a12eaae1a7d435526a7f567a88d3cd3dc93848532a31c211a2774d1e32a7
 models/websocket_frames_close.nif
@@ -264,3 +302,25 @@ ASan covered the new protocol test, not the whole suite; TSan was not run. No co
 runtime defect emerged. These tests support the checked transport paths; the native
 models separately establish the bounded progress claims above. Neither establishes
 complete memory safety, unbounded progress or all peer/TLS interoperability.
+
+The subsequent concurrency additions passed in default, release, danger and ASan
+builds, with threads and atomicArc. Only the two changed test programs were rerun;
+the full 14-program suite result above predates these additions.
+
+`test_websocket_protocol.nim` now creates two independent clients on separate owner
+threads released together. Both connect and exchange distinct messages with separate
+loopback peers. One owner cancels/aborts and releases its libcurl reference while the
+other connection remains open; the survivor then sends and receives again and closes
+gracefully. Each owner shuts down its own client, socket reads and phase waits are
+bounded, and no duplicate completion/terminal is retained.
+
+[test_lifecycle_contracts.nim](../tests/test_lifecycle_contracts.nim) now starts two
+raw waitForResult callers on one HTTP client, then submits two timed-out loopback
+transfers with distinct requestIds. Both callers return exactly once with distinct
+completions; outstanding and ready results are empty. Owner shutdown happens only
+after both caller threads join. This tests concurrent raw retrieval, preserving the
+exclusive-use requirement for blocking convenience helpers.
+
+No implementation defect emerged from these additions. The concurrency coverage is
+two independent WebSocket clients and at most two HTTP result callers; arbitrary
+numbers of clients/callers and unbounded scheduling fairness remain outside the claim.

@@ -1,5 +1,5 @@
 import relay/http
-import std/[algorithm, assertions, locks, net, os]
+import std/[algorithm, assertions, locks, monotimes, net, os, times]
 from std/nativesockets import getSockName
 
 type
@@ -13,6 +13,40 @@ type
     startError: string
     thread: Thread[ptr StallServerObj]
   StallServer = ref StallServerObj
+  ResultWaiterObj = object
+    lock: Lock
+    client: HttpClient
+    started, done, received: bool
+    requestId: int64
+    error: TransportErrorKind
+    thread: Thread[ptr ResultWaiterObj]
+  ResultWaiter = ref ResultWaiterObj
+
+proc resultWaiterMain(waiterPtr: ptr ResultWaiterObj) {.thread.} =
+  let waiter = cast[ResultWaiter](waiterPtr)
+  acquire(waiter.lock)
+  waiter.started = true
+  release(waiter.lock)
+  var item: RequestResult
+  let received = waiter.client.waitForResult(item)
+  acquire(waiter.lock)
+  waiter.received = received
+  if received:
+    waiter.requestId = item.response.request.requestId
+    waiter.error = item.error.kind
+  waiter.done = true
+  release(waiter.lock)
+
+proc awaitWaiter(waiter: ResultWaiter; completion: bool) =
+  let deadline = getMonoTime() + initDuration(milliseconds = 3_000)
+  while getMonoTime() < deadline:
+    acquire(waiter.lock)
+    let reached = if completion: waiter.done else: waiter.started
+    release(waiter.lock)
+    if reached: return
+    sleep(1)
+  # Shutdown cannot run while callers wait; terminate instead of hanging during join.
+  quit("HTTP result waiter did not reach expected state", 1)
 
 proc stallServerMain(serverPtr: ptr StallServerObj) {.thread, raises: [].} =
   let server = cast[StallServer](serverPtr)
@@ -160,9 +194,45 @@ proc testPollForResultEmptyQueue() =
   finally:
     client.close()
 
+proc testConcurrentResultWaiters() =
+  let server = startStallServer()
+  let client = newHttpClient(maxInFlight = 2, defaultTimeoutMs = 150)
+  let first = ResultWaiter(client: client)
+  let second = ResultWaiter(client: client)
+  initLock(first.lock)
+  initLock(second.lock)
+  createThread(first.thread, resultWaiterMain, cast[ptr ResultWaiterObj](first))
+  createThread(second.thread, resultWaiterMain, cast[ptr ResultWaiterObj](second))
+  first.awaitWaiter(completion = false)
+  second.awaitWaiter(completion = false)
+  # Only raw submission/retrieval are shared; blocking convenience helpers need exclusivity.
+  var batch: RequestBatch
+  batch.get(stallUrl(server), requestId = 10)
+  batch.get(stallUrl(server), requestId = 20)
+  client.startRequests(batch)
+  first.awaitWaiter(completion = true)
+  second.awaitWaiter(completion = true)
+  joinThread(first.thread)
+  joinThread(second.thread)
+  try:
+    doAssert first.received and second.received
+    doAssert first.error == teTimeout and second.error == teTimeout
+    var requestIds = @[first.requestId, second.requestId]
+    requestIds.sort()
+    doAssert requestIds == @[10'i64, 20'i64], "missing or duplicate completion"
+    doAssert not client.hasRequests()
+    var extra: RequestResult
+    doAssert not client.pollForResult(extra)
+  finally:
+    client.close()
+    deinitLock(first.lock)
+    deinitLock(second.lock)
+    stopStallServer(server)
+
 proc main() =
   testClearQueueCancelsQueuedRequests()
   testPollForResultEmptyQueue()
+  testConcurrentResultWaiters()
 
 when isMainModule:
   main()

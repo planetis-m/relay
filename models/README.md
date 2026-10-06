@@ -39,7 +39,9 @@ Default bounds: WebSocket lifecycle has one fresh connection, two operations, on
 retained slot and budget two. Frames/close starts with two accepted sends and allows
 three receive publications; message/byte/event/control capacities are two, versus
 eight controls in the implementation. HTTP has two logical request objects and one
-easy handle. Identities do not recycle. HTTP object IDs are independent of caller
+easy handle and one result waiter. Set `Waiters` to `(range 1 2)` to exercise two
+concurrent raw result callers, with either one or two handles. Identities do not
+recycle. HTTP object IDs are independent of caller
 requestId values, which can repeat.
 
 The following variations were also checked; edit constants and remove the listed
@@ -83,6 +85,23 @@ both evaluators agree. Liveness is single-worker; do not add `--jobs` or `--sym`
 Exit 3 reports a fair counterexample; exit 4 means incomplete, and exit 5 means
 no admissible fair behavior. Only an exhaustive exit 0 establishes bounded progress.
 
+After setting HTTP `Waiters` to `(range 1 2)`, these checks also pass with either
+handle bound. Restore the default constant after exploration:
+
+```sh
+tlanif --max-states:400000 models/http_lifecycle.nif
+tlanif --jobs:4 --max-states:400000 models/http_lifecycle.nif
+tlanif --max-states:400000 --live:GoalShutdown,GoalDelivery --fair:FairWorker,FairNetwork models/http_lifecycle.nif
+tlanif --max-states:400000 --live:GoalOperations,GoalResultWait1,GoalResultWait2 --fair:FairWorker,FairNetwork,FairConsumer1,FairConsumer2,FairOwner models/http_lifecycle.nif
+```
+
+Each caller needs its own fairness group and progress goal. `FairConsumer` alone
+allows one caller to keep running while the other starves. `GoalWaitersTogether`
+is a deliberately stronger diagnostic: fair callers can return individually without
+ever being idle simultaneously. Both diagnostics fail with two callers. A signal
+wakes one sleeper and does not reserve a result; another consumer may take it first.
+An empty wait can then legitimately continue until future work or worker stop.
+
 Each selected goal means `[]<>Goal` under weak fairness of the selected action
 groups. A disjunction or existential action is one group, not fairness for each
 branch or connection. Finite operation identities never recycle: publication and
@@ -92,16 +111,16 @@ HTTP delivery permits owner-abort discard; full operation retirement additionall
 assumes owner join. Frame send fairness abstracts deadline expiry and worker service
 together, without requiring peer cooperation or successful delivery.
 
-Waiter progress covers one result consumer and, in the default WebSocket model,
-one event/disposal consumer. An empty result wait on a running client can legitimately
+Waiter progress covers one or two HTTP result consumers and, in the default WebSocket
+model, one result and one event/disposal consumer. An empty result wait on a running client can legitimately
 remain blocked indefinitely; `GoalResultWait` excludes that case. `GoalWaiters` is
 an intentionally failing diagnostic. Reuse/duplex disable wait entry, so their
 liveness checks cover shutdown, terminal state, publication and consumption only.
-These proofs do not establish progress for unbounded work or multiple competing waiters.
+These proofs do not establish progress for unbounded work or more than two HTTP waiters.
 
 Caller constraints include creating-thread shutdown after other callers finish,
 exclusive access for blocking helpers, WebSocket sends after connect success and one
-event/disposal consumer per connection. One result consumer is modeled. HTTP public
+event/disposal consumer per connection. WebSocket models use one result consumer. HTTP public
 calls after owner close are excluded; WebSocket retained results/events remain usable.
 The models abstract payloads, error categories, curl/OS internals, ARC memory safety,
 constructor rollback, parsing, TLS, retry behavior, unbounded work and real-time bounds.

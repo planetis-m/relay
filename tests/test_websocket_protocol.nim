@@ -19,7 +19,7 @@ proc protocolTestAvailable(): bool {.importc: "protocol_test_available", nodecl.
 
 type
   PeerMode = enum
-    pmEcho, pmOrdered, pmSilentClose, pmCancel, pmInvalidText
+    pmEcho, pmOrdered, pmSilentClose, pmCancel, pmInvalidText, pmInstanceAbort, pmInstanceSurvive
   PeerObj = object
     lock: Lock
     readyCond: Cond
@@ -32,6 +32,14 @@ type
   Frame = object
     opcode: int
     data: string
+  ClientOwnerObj = object
+    lock: Lock
+    port: Port
+    aborting: bool
+    allowed, phase: int
+    error: string
+    thread: Thread[ptr ClientOwnerObj]
+  ClientOwner = ref ClientOwnerObj
 
 proc readBytes(socket: Socket; count: int): string =
   if count == 0: return ""
@@ -146,6 +154,18 @@ proc peerMain(peerPtr: ptr PeerObj) {.thread, raises: [].} =
     of pmInvalidText:
       socket.send(wireFrame(1, "valid") & wireFrame(1, "\xff"))
       doAssert socket.readFrame().opcode == -1
+    of pmInstanceAbort, pmInstanceSurvive:
+      let messages = if peer.mode == pmInstanceAbort: @["abort client"]
+        else: @["survivor before", "survivor after"]
+      for data in messages:
+        let frame = socket.readFrame()
+        doAssert frame.opcode == 1 and frame.data == data
+        socket.send(wireFrame(1, data))
+      if peer.mode == pmInstanceSurvive:
+        let close = socket.readFrame()
+        doAssert close.opcode == 8
+        socket.send(wireFrame(8, close.data))
+      doAssert socket.readFrame().opcode == -1
   except CatchableError:
     acquire(peer.lock)
     peer.error = getCurrentExceptionMsg()
@@ -192,10 +212,112 @@ proc expectMessage(client: WebSocketClient; id: ConnectionId; kind: MessageKind;
   doAssert received.kind == wrMessage, $received.kind & ": " & received.error.message
   doAssert received.message.kind == kind and received.message.data == data
 
+proc waitForPermission(owner: ClientOwner; phase: int) =
+  let deadline = getMonoTime() + initDuration(milliseconds = 5_000)
+  while getMonoTime() < deadline:
+    acquire(owner.lock)
+    let allowed = owner.allowed
+    release(owner.lock)
+    if allowed >= phase: return
+    sleep(1)
+  raise newException(IOError, "client owner did not receive permission")
+
+proc clientOwnerMain(ownerPtr: ptr ClientOwnerObj) {.thread, raises: [].} =
+  let owner = cast[ClientOwner](ownerPtr)
+  try:
+    owner.waitForPermission(1)
+    # Construction and shutdown stay on this thread; each owner has its own worker.
+    let client = newWebSocketClient(bypassProxy = true, closeTimeoutMs = 500)
+    try:
+      let connected = client.connect("ws://127.0.0.1:" & $int(owner.port), timeoutMs = 2_000)
+      doAssert connected.error.kind == teNone, connected.error.message
+      let id = connected.connectionId
+      let data = if owner.aborting: "abort client" else: "survivor before"
+      doAssert client.send(id, WebSocketMessage(kind: wmText, data: data),
+        timeoutMs = 2_000).error.kind == teNone
+      client.expectMessage(id, wmText, data)
+      acquire(owner.lock)
+      owner.phase = 1
+      release(owner.lock)
+      owner.waitForPermission(2)
+      if owner.aborting:
+        client.cancel(id)
+        client.abort()
+        let terminal = client.receive(id)
+        doAssert terminal.kind == wrClosed and terminal.error.kind == teCanceled
+      else:
+        doAssert client.send(id, WebSocketMessage(kind: wmText, data: "survivor after"),
+          timeoutMs = 2_000).error.kind == teNone
+        client.expectMessage(id, wmText, "survivor after")
+        client.closeConnection(id)
+        client.close()
+      var event: WebSocketEvent
+      var completion: WebSocketResult
+      doAssert not client.pollForEvent(id, event), "duplicate terminal"
+      doAssert not client.waitForResult(completion), "duplicate completion"
+    finally:
+      client.abort()
+  except CatchableError:
+    acquire(owner.lock)
+    owner.error = getCurrentExceptionMsg()
+    release(owner.lock)
+  finally:
+    acquire(owner.lock)
+    owner.phase = 2
+    release(owner.lock)
+
+proc allow(owner: ClientOwner; phase: int) =
+  acquire(owner.lock)
+  owner.allowed = phase
+  release(owner.lock)
+
+proc awaitPhase(owner: ClientOwner; phase: int) =
+  let deadline = getMonoTime() + initDuration(milliseconds = 5_000)
+  while getMonoTime() < deadline:
+    acquire(owner.lock)
+    let reached = owner.phase >= phase
+    let error = owner.error
+    release(owner.lock)
+    doAssert error.len == 0, error
+    if reached: return
+    sleep(1)
+  # Exit directly so a stalled worker cannot make failure cleanup block in joinThread.
+  quit("concurrent WebSocket client failed to reach phase " & $phase, 1)
+
 proc main() =
   if not protocolTestAvailable():
     echo "Skipping WebSocket protocol tests: requires WebSocket-enabled libcurl 8.14+"
     return
+
+  block independent_clients:
+    let abortedPeer = startPeer(pmInstanceAbort)
+    let survivingPeer = startPeer(pmInstanceSurvive)
+    let aborted = ClientOwner(port: abortedPeer.port, aborting: true)
+    let surviving = ClientOwner(port: survivingPeer.port)
+    initLock(aborted.lock)
+    initLock(surviving.lock)
+    createThread(aborted.thread, clientOwnerMain, cast[ptr ClientOwnerObj](aborted))
+    createThread(surviving.thread, clientOwnerMain, cast[ptr ClientOwnerObj](surviving))
+    try:
+      # Release both constructors together, then hold both connected instances alive.
+      aborted.allow(1)
+      surviving.allow(1)
+      aborted.awaitPhase(1)
+      surviving.awaitPhase(1)
+      aborted.allow(2)
+      aborted.awaitPhase(2)
+      # The first owner has released its libcurl reference; the second must still work.
+      surviving.allow(2)
+      surviving.awaitPhase(2)
+    finally:
+      aborted.allow(2)
+      surviving.allow(2)
+      joinThread(aborted.thread)
+      joinThread(surviving.thread)
+      deinitLock(aborted.lock)
+      deinitLock(surviving.lock)
+      abortedPeer.finishPeer()
+      survivingPeer.finishPeer()
 
   block roundtrip:
     let peer = startPeer(pmEcho)
