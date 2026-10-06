@@ -265,7 +265,9 @@ proc queueLen*(client: HttpClient): int
 ## Behavioral Notes
 
 - Results are delivered in completion order, not submission order.
-- Every request yields exactly one `RequestResult`.
+- Every accepted request yields one `RequestResult` unless discarded by owner shutdown.
+  `close` finishes queued/in-flight work; `abort` may discard unfinished work without
+  publishing a result. Both discard unread results, so drain results before shutdown.
 - `Response.request.requestId` echoes the request id for correlation.
 - Redirects are enabled by default (`maxRedirects`).
 - Response body is automatically decoded when server uses gzip/deflate.

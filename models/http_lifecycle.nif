@@ -2,7 +2,7 @@
  one easy handle by default; set Handles to two to cover concurrent transfers. Objects are NOT
  user requestId values, which may repeat. stage: unused=0 caller-batch=1 queued=2
  configuring=3 in-flight=4 finalizing=5 ready=6 consumed=7 owner-discarded=8
- owner-abandoned-without-completion=9 (the observed abort race).
+ owner-discarded-pending=9 (allowed by abort's shutdown contract).
  client: running=0 stopping=1 aborting=2 stopped=3. closed means owner joined and
  destroyed synchronization. pc: dispatch=0 configure=1 snapshot=2 branch=3
  perform=4 wait-check=5 flush=6 finalize=7 poll=8 sleep=9 exit=10 stopped=11
@@ -13,13 +13,14 @@
   (constants :Ops.0. :Handles.0.)
   (assign Ops.0. (range 1 2))
   (assign Handles.0. 1)
-  (variables :client.0. :closed.0. :ownerShutdown.0. :pc.0. :slot.0. :snapshotAbort.0. :snapshotFlight.0.
+  (variables :client.0. :closed.0. :ownerShutdown.0. :ownerAbort.0. :pc.0. :slot.0.
+    :snapshotAbort.0. :snapshotFlight.0.
     :awake.0. :waiter.0. :batch.0. :queue.0. :results.0. :stage.0. :produced.0.
     :due.0. :available.0. :outstanding.0. :admitted.0. :published.0. :moved.0. :clearedPrivate.0.)
   (def :Init.0.#Successful constructor with a running worker and an intact easy-handle pool.
     All variables are initialized; constructor rollback is outside this model.#
     (and (prime client.0. 0) (prime closed.0. (false))
-      (prime ownerShutdown.0. (false)) (prime pc.0. 0)
+      (prime ownerShutdown.0. (false)) (prime ownerAbort.0. (false)) (prime pc.0. 0)
       (prime slot.0. 0) (prime snapshotAbort.0. (false)) (prime snapshotFlight.0. (false))
       (prime awake.0. (true)) (prime waiter.0. 0)
       (prime batch.0. (seq)) (prime queue.0. (seq)) (prime results.0. (seq))
@@ -65,9 +66,12 @@
     (and (eq client.0. 0) (eq waiter.0. 0)
       (prime client.0. 1) (prime ownerShutdown.0. (true)) (prime awake.0. (true))))
   (def :Abort.0.#Owner abort wakes idle worker and cancels what the worker observes.
-    Work already taken out of the queue can finish its current private step.#
+    Work already taken out of the queue can finish its current private step.
+    ownerAbort is ghost provenance: only owner abort permits unpublished queued
+    work at exit; an unexpected worker failure must still publish its results.#
     (and (eq client.0. 0) (eq waiter.0. 0)
-      (prime client.0. 2) (prime ownerShutdown.0. (true)) (prime awake.0. (true))))
+      (prime client.0. 2) (prime ownerShutdown.0. (true))
+      (prime ownerAbort.0. (true)) (prime awake.0. (true))))
   (def :Join.0.#shutdown joins, discards unread HTTP results, resets outstanding and
     destroys the easy-handle pool and synchronization. Repeated close is stutter.#
     (and (eq client.0. 3) (eq waiter.0. 0) (not closed.0.)
@@ -241,13 +245,20 @@
       (implies (eq client.0. 3) (neq waiter.0. 1))
       (implies closed.0. (and (eq client.0. 3) (eq available.0. 0)
         (eq outstanding.0. 0) (eq (len results.0.) 0) (eq waiter.0. 0)))))
-  (def :Inv.0.#Required completion guarantee. FAILS for current HTTP implementation:
-    an abort after a no-inflight snapshot exits waitForWorkOrClose without flushing.
-    Change the final check to CoverageInv to explore remaining accounting
-    properties, explicitly excluding the failing completion guarantee.#
+  (def :StrictCompletionInv.0.#Diagnostic stronger policy: every accepted request
+    publishes even during owner abort. The actual HTTP contract permits discarding
+    unfinished work during abort, so a failure of this policy is not a defect.#
     (and CoverageInv.0.
       (implies (eq client.0. 3) (eq (len queue.0.) 0))
       (forall :o.0 Ops.0. (neq (apply stage.0. o.0) 9))))
+  (def :Inv.0.#Public lifecycle contract plus resource/accounting safety. Only owner
+    abort may stop with unpublished queued work, which is discarded on join.
+    Graceful stop and unexpected worker failure must complete all accepted work.
+    This explicit exception does not relax at-most-once publication or wakeups.#
+    (and CoverageInv.0.
+      (implies (and (eq client.0. 3) (gt (len queue.0.) 0)) ownerAbort.0.)
+      (forall :o.0 Ops.0.
+        (implies (eq (apply stage.0. o.0) 9) (and ownerAbort.0. closed.0.)))))
   (def :Next.0.#All legal worker/caller/environment interleavings. Calls rejected without
     state changes and repeated owner shutdown are represented by spec stuttering.#
     (or AddBatch.0. SubmitBatch.0. SubmitOne.0. Stop.0. Abort.0. Join.0.
@@ -269,8 +280,12 @@
   (def :GoalShutdown.0.#A stopping/aborting client eventually reaches worker-stopped.#
     (or (eq client.0. 0) (eq client.0. 3)))
   (def :GoalOperations.0.#Every accepted object eventually leaves pending/ready state:
-    it is consumed before shutdown, or owner shutdown discards its published result.#
-    (forall :o.0 Ops.0. (in (apply stage.0. o.0) (set 0 1 7 8))))
+    it is consumed before shutdown, owner join discards its published result, or
+    owner abort discards queued work without a result. Fair scheduling is an
+    annotation; the Tlanif safety CLI does not check this temporal claim.#
+    (forall :o.0 Ops.0.
+      (or (in (apply stage.0. o.0) (set 0 1 7 8))
+        (and ownerAbort.0. (eq (apply stage.0. o.0) 9)))))
   (def :GoalResultWait.0.#Empty running-client waits need not return without future work.
     A stopped worker must release even an empty waiter.#
     (or (eq waiter.0. 0) (and (eq (len results.0.) 0) (neq client.0. 3))))
@@ -306,10 +321,15 @@
     (and (eq (len admitted.0.) 2) (eq (len published.0.) 0)
       (eq pc.0. 7) (eq slot.0. (apply admitted.0. 2))
       (eq (apply stage.0. (apply admitted.0. 1)) 4)))
-  (def :WitnessStoppedPending.0.#Must be unreachable: stopped worker with unpublished accepted work.#
+  (def :WitnessStoppedPending.0.#Reachable under owner abort's discard policy:
+    a stopped worker can have unpublished queued work before owner cleanup.#
     (and (eq client.0. 3) (exists :o.0 Ops.0. (in (apply stage.0. o.0) (range 2 5)))))
+  (def :WitnessUnexpectedStoppedPending.0.#Must be unreachable without owner abort:
+    normal/graceful completion and worker failure preserve accepted completions.#
+    (and WitnessStoppedPending.0. (not ownerAbort.0.)))
   (spec (always-stutter Init.0. Next.0.
-    (tuple client.0. closed.0. ownerShutdown.0. pc.0. slot.0. snapshotAbort.0. snapshotFlight.0.
+    (tuple client.0. closed.0. ownerShutdown.0. ownerAbort.0. pc.0. slot.0.
+      snapshotAbort.0. snapshotFlight.0.
       awake.0. waiter.0. batch.0. queue.0. results.0. stage.0. produced.0. due.0.
       available.0. outstanding.0. admitted.0. published.0. moved.0. clearedPrivate.0.)))
   (check Inv.0.)

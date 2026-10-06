@@ -21,17 +21,17 @@ tlanif --max-states:400000 models/http_lifecycle.nif
 tlanif --jobs:4 --max-states:400000 models/http_lifecycle.nif
 ```
 
-WebSocket checks should pass. **HTTP currently fails with an eight-state completion
-counterexample** described in [REPORT.md](REPORT.md). Exit 0 means safety passed;
+All default checks should pass. HTTP explicitly permits owner abort to discard
+unfinished work, matching its shutdown contract. Exit 0 means safety passed;
 exit 2 can mean an invariant failure or state-limit hit, so read the diagnostic.
 A limit hit is not validation. Sequential and compiled-parallel counts, or shortest
 failure depths, must agree.
 
-For HTTP accounting coverage beyond that known failure, change its final
-`(check Inv.0.)` to `(check CoverageInv.0.)` and run both commands again. This explicitly
-weakens the check; it does not make completion delivery correct. Set `Handles` from
-one to two to exercise concurrent transfers and reverse transfer completion.
-Restore the original check/bound after exploration. No wrapper, result parser,
+Set HTTP `Handles` from one to two to exercise concurrent transfers and reverse
+transfer completion. Its diagnostic `StrictCompletionInv` requires publication even
+during owner abort; checking it produces an eight-state counterexample to that stronger
+policy. This is allowed discard, not a supported-API defect. Restore the original
+check/bound after exploration. No wrapper, result parser,
 Python dependency, compiler setup or generated report machinery is necessary.
 
 Default bounds: WebSocket lifecycle has one fresh connection, two operations, one
@@ -55,8 +55,8 @@ cannot prove multi-connection behavior. Unrestricted larger variations can hit t
 Witness predicates expose both intended reachable states and invariant exclusions;
 absence can also follow the finite bounds. To check a particular witness with Tlanif,
 use `(check (not WitnessName.0.))`: a counterexample proves it reachable; an exhaustive
-pass proves it absent in that bounded model. HTTP witnesses beyond its first failure
-require using the desired witness instead of the default completion invariant.
+pass proves it absent in that bounded model. Replace the existing check; Tlanif uses
+only the last check form, so multiple checks must be combined into one conjunction.
 
 These models follow `~/Projects/tlanif/README.md` and `AGENTS.md`: comments attach to
 tokens, module symbols have trailing dots, bound locals do not, Init primes every

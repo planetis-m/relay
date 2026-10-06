@@ -36,4 +36,5 @@
 
 /.nimcache/
 /tests/test_websocket
+/tests/test_websocket_protocol
 /tests/websocket_worker_probe
