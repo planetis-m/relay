@@ -2,7 +2,8 @@
 
 Relay provides HTTP and persistent WebSocket clients over libcurl. `HttpClient` handles
 batches and single requests with bounded parallelism; `WebSocketClient` multiplexes
-persistent connections, and `WebSocket` provides a synchronous text interface.
+persistent text/binary connections. Both offer blocking and incremental operations
+on the same client and return structured transport errors.
 
 It gives you:
 
@@ -89,11 +90,10 @@ Persistent connection APIs live in `relay/websocket`.
 | Owner | Constructor | Purpose |
 | --- | --- | --- |
 | `HttpClient` | `newHttpClient` | HTTP request worker and batch/single-request helpers |
-| `WebSocketClient` | `newWebSocketClient` | One worker for multiple persistent WebSocket connections |
-| `WebSocket` | `newWebSocket` | Synchronous text interface for one WebSocket connection |
+| `WebSocketClient` | `newWebSocketClient` | Persistent connections with blocking and incremental operations |
 
-`connect` on `HttpClient` issues HTTP CONNECT; on `WebSocket` it opens a persistent
-connection. See [WebSockets](docs/WEBSOCKETS.md) for the worker API.
+`connect` on `HttpClient` issues HTTP CONNECT; on `WebSocketClient` it opens a persistent
+connection. See [WebSockets](docs/WEBSOCKETS.md) for the connection API.
 
 ### Modules
 
@@ -103,7 +103,7 @@ connection. See [WebSockets](docs/WEBSOCKETS.md) for the worker API.
 | `relay/curl_wrap` | Owned handles, checked options and curl operations |
 | `relay/transport_errors` | Transport error construction, classification and retry predicates |
 | `relay/http` | HTTP worker, requests, batches and completions |
-| `relay/websocket` | Multi-connection worker and synchronous text connection |
+| `relay/websocket` | Persistent text/binary connections and completions |
 
 ### Core Types
 
@@ -232,6 +232,8 @@ proc head*(client: HttpClient; url: string; headers = emptyHttpHeaders();
   - Requires an idle client (no queued/in-flight/undrained prior results).
 - `makeRequest` is blocking single-request API.
   - Requires an idle client (same as `makeRequests`).
+- Open client state and idle state for blocking helpers are caller preconditions,
+  diagnosed with assertions. Assertions are disabled in danger builds.
 - `startRequests` is non-blocking enqueue API.
 - `waitForResult` blocks until one result is available or worker stops.
 - `pollForResult` returns immediately.
@@ -298,21 +300,33 @@ nim test tests/ci.nims
 
 ## Persistent WebSockets
 
-Use `WebSocket` for blocking text messages:
+Use `WebSocketClient` for blocking text or binary messages:
 ```nim
 import relay/websocket
 
-let socket = newWebSocket()
+let client = newWebSocketClient()
 try:
-  socket.connect("wss://example.com/socket")
-  socket.send("hello")
-  echo socket.receive()
+  let opened = client.connect("wss://example.com/socket")
+  if opened.error.kind == teNone:
+    let sent = client.send(opened.connectionId, "hello")
+    if sent.error.kind == teNone:
+      let item = client.receive(opened.connectionId)
+      case item.kind
+      of wrMessage: echo item.message.data
+      of wrClosed: echo "closed: ", item.error.message
+      of wrTimedOut: echo "receive timed out"
+    else:
+      echo sent.error.kind, " ", sent.error.message
+  else:
+    echo opened.error.kind, " ", opened.error.message
 finally:
-  socket.close()
+  client.close()
 ```
 
-For multiple connections or binary messages, use `WebSocketClient`. Both clients can
-run alongside HTTP. See [WebSockets](docs/WEBSOCKETS.md) for limits, timeouts and lifecycle.
+The same client supports multiple connections and incremental operations. Blocking
+connect/send require an idle operation pipeline and exclusive submission/result access,
+like HTTP's blocking helpers. See [WebSockets](docs/WEBSOCKETS.md) for limits, timeouts
+and lifecycle, or [the runnable example](examples/websocket_echo.nim).
 
 Local WebSocket checks require Node.js and OpenSSL:
 ```sh

@@ -31,6 +31,7 @@ proc runSuite(flags: string) =
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_websocket tests/test_websocket.nim"
   when defined(linux):
     runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_constructor_rollback tests/test_constructor_rollback.nim"
+    runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_websocket_worker_failure tests/test_websocket_worker_failure.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_parse_headers tests/test_parse_headers.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_query_params tests/test_query_params.nim"
   runTest "nim c -r" & testFlags & " --nimcache:.nimcache/" & tag & "/test_http_status tests/test_http_status.nim"

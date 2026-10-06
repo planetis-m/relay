@@ -371,12 +371,11 @@ proc wrapRequest(request: sink RequestSpec): RequestWrap {.inline.} =
   )
 
 proc startRequests*(client: HttpClient; batch: var RequestBatch) =
-  if client.closed:
-    raise newException(IOError, "client is closed")
+  assert not client.closed, "HTTP client is closed"
   acquire(client.lock)
   try:
     if client.state != csRunning:
-      raise newException(IOError, "client is closed")
+      raise newException(IOError, "HTTP worker stopped")
 
     for request in batch.requests.mitems:
       client.queue.addLast(wrapRequest(move request))
@@ -388,12 +387,11 @@ proc startRequests*(client: HttpClient; batch: var RequestBatch) =
     release(client.lock)
 
 proc startRequest*(client: HttpClient; request: sink RequestSpec) =
-  if client.closed:
-    raise newException(IOError, "client is closed")
+  assert not client.closed, "HTTP client is closed"
   acquire(client.lock)
   try:
     if client.state != csRunning:
-      raise newException(IOError, "client is closed")
+      raise newException(IOError, "HTTP worker stopped")
 
     client.queue.addLast(wrapRequest(request))
 
@@ -425,8 +423,8 @@ proc pollForResult*(client: HttpClient; outResult: var RequestResult): bool =
   release(client.lock)
 
 proc makeRequests*(client: HttpClient; batch: var RequestBatch): RequestResults =
-  if client.clientIsBusy():
-    raise newException(IOError, "makeRequests requires an idle client")
+  assert not client.closed, "HTTP client is closed"
+  assert not client.clientIsBusy(), "makeRequests requires an idle client"
 
   let expected = batch.requests.len
   client.startRequests(batch)
@@ -439,8 +437,8 @@ proc makeRequests*(client: HttpClient; batch: var RequestBatch): RequestResults 
 
 proc makeRequest*(client: HttpClient; request: sink RequestSpec): RequestResult =
   result = (Response(), noTransportError())
-  if client.clientIsBusy():
-    raise newException(IOError, "makeRequest requires an idle client")
+  assert not client.closed, "HTTP client is closed"
+  assert not client.clientIsBusy(), "makeRequest requires an idle client"
 
   client.startRequest(request)
   if not client.waitForResult(result):

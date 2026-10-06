@@ -152,28 +152,6 @@ proc testClearQueueCancelsQueuedRequests() =
   finally:
     stopStallServer(server)
 
-proc testMakeRequestsRequiresIdleClient() =
-  let server = startStallServer()
-  try:
-    let client = newHttpClient(maxInFlight = 1, defaultTimeoutMs = 5_000, maxRedirects = 5)
-    try:
-      let url = stallUrl(server)
-      var firstBatch: RequestBatch
-      firstBatch.get(url, requestId = 11, timeoutMs = 5_000)
-      client.startRequests(firstBatch)
-
-      doAssert waitForQueuedState(client, minQueueLen = 0, timeoutMs = 1_000),
-        "relay did not dispatch initial request"
-
-      var secondBatch: RequestBatch
-      secondBatch.get(url, requestId = 22, timeoutMs = 5_000)
-
-      doAssertRaises IOError: discard client.makeRequests(secondBatch)
-    finally:
-      client.abort()
-  finally:
-    stopStallServer(server)
-
 proc testPollForResultEmptyQueue() =
   let client = newHttpClient(maxInFlight = 1)
   try:
@@ -184,7 +162,6 @@ proc testPollForResultEmptyQueue() =
 
 proc main() =
   testClearQueueCancelsQueuedRequests()
-  testMakeRequestsRequiresIdleClient()
   testPollForResultEmptyQueue()
 
 when isMainModule:

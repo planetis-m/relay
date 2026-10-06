@@ -3,7 +3,6 @@ import std/assertions
 
 const
   UnreachableA = "http://127.0.0.1:1"
-  UnreachableB = "http://127.0.0.1:2"
 
 proc checkResult(item: RequestResult; verb: HttpVerb; requestId: int64; url: string) =
   doAssert item.response.request.verb == verb
@@ -49,16 +48,6 @@ proc main =
       inFlightBatch.get(UnreachableA, requestId = 301 + i.int64, timeoutMs = 200)
     client.startRequests(inFlightBatch)
     client.clearQueue()
-
-    doAssertRaises IOError:
-      discard client.makeRequest(RequestSpec(
-        verb: hvGet,
-        url: UnreachableB,
-        headers: emptyHttpHeaders(),
-        body: "",
-        requestId: 302,
-        timeoutMs: 200
-      ))
 
     for _ in 0..<pendingCount:
       var drained: RequestResult

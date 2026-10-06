@@ -49,45 +49,43 @@ block serviceOwnership:
   alias.abort()
   client.close()
   doAssert not client.waitForResult(item)
-  when not defined(danger):
-    doAssertRaises AssertionDefect: discard client.startConnect("ws://127.0.0.1:1/")
   close(WebSocketClient(nil))
   abort(WebSocketClient(nil))
 
-block disconnected:
-  let client = newWebSocket()
+block failedConnectReuse:
+  let client = newWebSocketClient(maxConnections = 1, bypassProxy = true)
   try:
-    when not defined(danger):
-      doAssertRaises AssertionDefect: client.send("hello")
-      doAssertRaises AssertionDefect: discard client.receive()
-    when not defined(danger):
-      for url in ["ws://localhost/#fragment", "ws://localhost/\0hidden"]:
-        doAssertRaises AssertionDefect: client.connect(url)
+    for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
+        "ws://localhost/\n"]:
+      let failed = client.connect(url)
+      doAssert failed.error.kind != teNone
+      var completion: WebSocketResult
+      var event: WebSocketEvent
+      doAssert not client.pollForResult(completion)
+      doAssert not client.pollForEvent(failed.connectionId, event)
   finally:
     client.close()
 
-block urlErrors:
-  for url in ["", "http://example.com/", "ws:///", "ws://user:pass@localhost/",
-      "ws://localhost/\n"]:
-    let client = newWebSocket()
-    try:
-      doAssertRaises IOError: client.connect(url)
-    finally:
-      client.close()
+block executionStyles:
+  let client = newWebSocketClient(maxConnections = 1, bypassProxy = true)
+  try:
+    let submitted = client.startConnect("http://example.com/")
+    var completion: WebSocketResult
+    doAssert client.waitForResult(completion)
+    doAssert completion.operationId == submitted.operationId
+    client.closeConnection(submitted.connectionId)
+    doAssert client.connect("http://example.com/").error.kind != teNone
+  finally:
+    client.close()
 
 block sharedClose:
-  let client = newWebSocket(defaultTimeoutMs = 0, maxMessageBytes = 0)
+  let client = newWebSocketClient(defaultTimeoutMs = 0, maxMessageBytes = 0)
   let alias = client
   alias.close()
   client.close()
-  when not defined(danger):
-    doAssertRaises AssertionDefect: client.connect("ws://127.0.0.1:1/")
-    doAssertRaises AssertionDefect: client.send("")
-    doAssertRaises AssertionDefect: discard alias.receive()
-  close(WebSocket(nil))
 
 block explicitClose:
-  let client = newWebSocket()
+  let client = newWebSocketClient()
   client.close()
 
 echo "WebSocket ABI, input and ownership contracts passed"

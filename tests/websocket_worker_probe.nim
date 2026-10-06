@@ -20,6 +20,11 @@ proc opened(service: WebSocketClient; url: string): ConnectionId =
 proc text(service: WebSocketClient; id: ConnectionId; data: sink string): OperationId =
   service.startSend(id, WebSocketMessage(kind: wmText, data: data))
 
+proc received(client: WebSocketClient; id: ConnectionId): WebSocketMessage =
+  var item = client.receive(id)
+  doAssert item.kind == wrMessage and item.error.kind == teNone
+  result = move item.message
+
 type Waiter = object
   service: pointer
   id: ConnectionId
@@ -37,62 +42,149 @@ proc main() =
     maxEvents = 2, maxQueuedBytes = if mode == "bytes": 8 else: 32 * 1024 * 1024,
     defaultTimeoutMs = 1500, bypassProxy = true, caInfo = paramStr(3))
   try:
-    if mode == "text-client":
-      let client = newWebSocket(defaultTimeoutMs = 1500, maxMessageBytes = 8,
-        bypassProxy = true)
+    if mode == "blocking-client":
+      let client = newWebSocketClient(maxConnections = 1, maxCommands = 1,
+        defaultTimeoutMs = 1500, maxMessageBytes = 8, bypassProxy = true)
       try:
-        when not defined(danger):
-          doAssertRaises AssertionDefect: client.connect(url & "#fragment")
-        client.connect(url)
-        when not defined(danger):
-          doAssertRaises AssertionDefect: client.connect(url)
-        when not defined(danger):
-          doAssertRaises AssertionDefect: client.send(repeat('x', 9))
-        client.send("echo")
-        doAssert client.receive() == "echo"
-        doAssertRaises TimeoutError: discard client.receive(timeoutMs = 30)
-        client.send("alive")
-        doAssert client.receive() == "alive"
+        let opened = client.connect(url)
+        doAssert opened.error.kind == teNone
+        let id = opened.connectionId
+        let sent = client.send(id, "echo")
+        doAssert sent.error.kind == teNone and sent.connectionId == id
+        doAssert sent.operationId != opened.operationId
+        doAssert client.received(id).data == "echo"
+        let timedOut = client.receive(id, timeoutMs = 30)
+        doAssert timedOut.kind == wrTimedOut and timedOut.error.kind == teTimeout
+        doAssert client.send(id, "alive").error.kind == teNone
+        doAssert client.received(id).data == "alive"
         var retained = "owned"
-        client.send(retained)
+        doAssert client.send(id, retained).error.kind == teNone
         retained[0] = 'X'
-        doAssert client.receive() == "owned"
+        doAssert client.received(id).data == "owned"
         var transferred = "moved"
-        client.send(move transferred)
+        doAssert client.send(id, move transferred).error.kind == teNone
         doAssert transferred.len == 0
-        doAssert client.receive() == "moved"
+        doAssert client.received(id).data == "moved"
+        doAssert client.send(id, "").error.kind == teNone
+        doAssert client.received(id).data == ""
+        doAssert client.send(id, WebSocketMessage(kind: wmBinary, data: "\0\xffbinary"))
+          .error.kind == teNone
+        let binary = client.received(id)
+        doAssert binary.kind == wmBinary and binary.data == "\0\xffbinary"
+        client.closeConnection(id)
+        doAssert client.connect(url).error.kind == teNone
       finally:
         client.close()
-    elif mode == "text-failure":
-      for invalid in [url & "bad", url.replace("ws://", "http://"),
-          url.replace("ws://", "ws://user:pass@")]:
-        let failed = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
-        try:
-          doAssertRaises IOError: failed.connect(invalid)
-        finally:
-          failed.close()
-      let peer = newWebSocket(defaultTimeoutMs = 1500, bypassProxy = true)
+    elif mode == "blocking-failure":
+      let peer = newWebSocketClient(maxConnections = 1,
+        defaultTimeoutMs = 1500, bypassProxy = true)
       try:
-        peer.connect(url & "close")
+        for invalid in [url & "bad", url.replace("ws://", "http://"),
+            url.replace("ws://", "ws://user:pass@")]:
+          doAssert peer.connect(invalid).error.kind != teNone
+        let opened = peer.connect(url & "close")
+        doAssert opened.error.kind == teNone
         sleep(80)
-        doAssertRaises IOError: peer.send("hello")
-        try:
-          discard peer.receive()
-          doAssert false, "expected peer closure"
-        except IOError as error:
-          doAssert error.msg == "Peer closed the WebSocket connection"
-        when not defined(danger):
-          doAssertRaises AssertionDefect: peer.send("disconnected")
+        let terminal = peer.receive(opened.connectionId)
+        doAssert terminal.kind == wrClosed and terminal.error.kind == teCanceled
+        doAssert terminal.error.message == "Peer closed the WebSocket connection"
+        doAssert peer.connect(url).error.kind == teNone
       finally:
         peer.close()
+    elif mode == "blocking-timeouts":
+      let client = newWebSocketClient(maxConnections = 1, bypassProxy = true)
+      try:
+        doAssert client.connect(url & "stall", timeoutMs = 30).error.kind == teTimeout
+        let opened = client.connect(url & "pause")
+        doAssert opened.error.kind == teNone
+        let sent = client.send(opened.connectionId,
+          WebSocketMessage(kind: wmBinary, data: repeat('x', 32 * 1024 * 1024)),
+          timeoutMs = 60)
+        doAssert sent.error.kind == teTimeout
+        let terminal = client.receive(opened.connectionId)
+        doAssert terminal.kind == wrClosed and terminal.error.kind == teTimeout
+        let next = client.connect(url & "disconnect-send")
+        doAssert next.error.kind == teNone
+        let failed = client.send(next.connectionId,
+          WebSocketMessage(kind: wmBinary, data: repeat('x', 32 * 1024 * 1024)))
+        doAssert failed.error.kind == teNetwork and failed.error.curlCode > 0
+        doAssert client.receive(next.connectionId).kind == wrClosed
+        doAssert client.connect(url).error.kind == teNone
+      finally:
+        client.close()
+    elif mode == "blocking-disposal":
+      let slow = service.connect(url & "flood")
+      let healthy = service.connect(url)
+      doAssert slow.error.kind == teNone and healthy.error.kind == teNone
+      sleep(80)
+      service.closeConnection(slow.connectionId)
+      var event: WebSocketEvent
+      doAssert not service.pollForEvent(slow.connectionId, event)
+      let replacement = service.connect(url & "no-close")
+      doAssert replacement.error.kind == teNone
+      doAssert service.send(replacement.connectionId, "unread").error.kind == teNone
+      sleep(40)
+      let started = getMonoTime()
+      service.closeConnection(replacement.connectionId)
+      doAssert (getMonoTime() - started).inMilliseconds < 500
+      doAssert not service.pollForEvent(replacement.connectionId, event)
+      doAssert service.send(healthy.connectionId, "survives disposal").error.kind == teNone
+      doAssert service.received(healthy.connectionId).data == "survives disposal"
+      let pending = service.startConnect(url & "stall")
+      let closingStarted = getMonoTime()
+      service.closeConnection(pending.connectionId)
+      doAssert (getMonoTime() - closingStarted).inMilliseconds < 500
+      doAssert service.resultFor(pending.operationId).error.kind == teCanceled
+      doAssert not service.pollForEvent(pending.connectionId, event)
+      doAssert service.connect(url).error.kind == teNone
+    elif mode == "blocking-close-pending":
+      let slow = service.connect(url & "pause")
+      let healthy = service.connect(url)
+      doAssert slow.error.kind == teNone and healthy.error.kind == teNone
+      let pending = service.startSend(slow.connectionId,
+        WebSocketMessage(kind: wmBinary, data: repeat('x', 32 * 1024 * 1024)))
+      service.closeConnection(slow.connectionId)
+      doAssert service.resultFor(pending).error.kind == teCanceled
+      doAssert service.send(healthy.connectionId, "healthy").error.kind == teNone
+      doAssert service.received(healthy.connectionId).data == "healthy"
+    elif mode == "close-handshake":
+      let local = service.opened(url & "close-handshake")
+      service.startCloseConnection(local)
+      doAssert service.eventFor(local).error.kind == teCanceled
+      let remote = service.opened(url & "close")
+      doAssert service.eventFor(remote).error.kind == teCanceled
+    elif mode == "close-deadline":
+      let client = newWebSocketClient(bypassProxy = true, closeTimeoutMs = 400)
+      try:
+        let id = client.opened(url & "close-deadline")
+        let pending = client.startSend(id,
+          WebSocketMessage(kind: wmBinary, data: repeat('x', 32 * 1024 * 1024)))
+        # The peer has seen the unfinished frame and stopped reading it.
+        doAssert client.eventFor(id).message.data == "close barrier"
+        let started = getMonoTime()
+        client.startCloseConnection(id)
+        doAssert client.eventFor(id).error.kind == teCanceled
+        doAssert (getMonoTime() - started).inMilliseconds < 550,
+          "Peer close reply restarted the local close deadline"
+        doAssert client.resultFor(pending).error.kind == teCanceled
+      finally:
+        client.close()
+    elif mode == "cancel-close":
+      let id = service.opened(url & "pause")
+      let pending = service.startSend(id,
+        WebSocketMessage(kind: wmBinary, data: repeat('x', 32 * 1024 * 1024)))
+      service.startCloseConnection(id)
+      service.cancel(id)
+      service.startCloseConnection(id)
+      let terminal = service.eventFor(id)
+      doAssert terminal.kind == weClosed and terminal.error.message == "WebSocket canceled"
+      doAssert service.resultFor(pending).error.kind == teCanceled
     elif mode.startsWith("tls"):
-      let ids = service.startConnect(url)
-      let response = service.resultFor(ids.operationId)
+      let response = service.connect(url)
       if mode == "tls-accept":
         doAssert response.error.kind == teNone
-        let send = service.text(ids.connectionId, "secure echo")
-        doAssert service.resultFor(send).error.kind == teNone
-        doAssert service.eventFor(ids.connectionId).message.data == "secure echo"
+        doAssert service.send(response.connectionId, "secure echo").error.kind == teNone
+        doAssert service.received(response.connectionId).data == "secure echo"
       else:
         doAssert response.error.kind == teTls, response.error.message
     elif mode == "cancel-connect":
@@ -130,7 +222,7 @@ proc main() =
       let slow = service.opened(url & "flood")
       let fast = service.opened(url)
       sleep(80)
-      # Full mailbox preserves accepted messages, then a reserved terminal error.
+      # A full event queue preserves accepted messages, then terminal status.
       for i in 0..<(if mode == "bytes": 1 else: 2):
         doAssert service.eventFor(slow).message.data == "flood" & $i
       let terminal = service.eventFor(slow)
@@ -157,7 +249,7 @@ proc main() =
     elif mode == "idle-close":
       let id = service.opened(url & "no-close")
       let started = getMonoTime()
-      service.closeConnection(id)
+      service.startCloseConnection(id)
       doAssert service.eventFor(id).kind == weClosed
       doAssert (getMonoTime() - started).inMilliseconds < 500
     elif mode == "abort-full":
@@ -245,8 +337,6 @@ proc main() =
       var item: WebSocketResult
       for i in 0..<2: doAssert service.waitForResult(item)
       doAssert not service.waitForResult(item)
-      when not defined(danger):
-        doAssertRaises AssertionDefect: discard service.startConnect(url)
     else:
       let http = newHttpClient(maxInFlight = 1)
       try:

@@ -40,6 +40,14 @@ async function fixture(tls) {
       return;
     }
     if (req.url.endsWith('pause')) { socket.pause(); return; }
+    if (req.url.endsWith('close-deadline')) {
+      socket.once('data', () => {
+        socket.pause();
+        socket.write(frame('close barrier'));
+        timers.push(setTimeout(() => socket.write(frame('', 8)), 250));
+      });
+      return;
+    }
     if (req.url.endsWith('partial')) {
       socket.pause();
       timers.push(setTimeout(() => socket.resume(), 70));
@@ -48,6 +56,7 @@ async function fixture(tls) {
       socket.write(Buffer.concat([frame('i'.repeat(100_000), 1, false),
         frame('idle ping', 9), frame('i'.repeat(100_000), 0)]));
     }
+    let closeReplied = false;
     decoder(socket, item => {
       if (item.opcode === 1 || item.opcode === 2) {
         if (item.opcode === 2) ++evidence.binary;
@@ -59,7 +68,11 @@ async function fixture(tls) {
         if (!req.url.endsWith('duplex')) socket.write(frame('pong observed'));
       } else if (item.opcode === 8) {
         ++evidence.closes;
-        if (!req.url.endsWith('no-close')) socket.end(frame(item.payload, 8));
+        if (req.url.endsWith('close-handshake')) {
+          // Keep reading until the client disconnects to catch duplicate CLOSEs.
+          if (!closeReplied) socket.write(frame(item.payload, 8));
+          closeReplied = true;
+        } else if (!req.url.endsWith('no-close')) socket.end(frame(item.payload, 8));
       }
     });
     if (req.url.endsWith('ping')) socket.write(frame('idle ping', 9));
@@ -105,7 +118,10 @@ function execute(url, mode, ca = '') {
     });
   });
 }
-for (const mode of ['http-first', 'socket-first', 'text-client', 'text-failure', 'idle', 'pressure', 'cancel-connect',
+for (const mode of ['http-first', 'socket-first', 'blocking-client', 'blocking-failure',
+  'blocking-timeouts', 'blocking-disposal', 'blocking-close-pending',
+  'close-handshake', 'close-deadline', 'cancel-close',
+  'idle', 'pressure', 'cancel-connect',
   'cancel-send', 'queued-deadline', 'cancel-receive', 'failure', 'shutdown-full',
   'bytes', 'duplex', 'partial', 'idle-close', 'abort-full', 'shutdown-scope', 'slow-peer',
   'disconnect', 'disconnect-send']) {
@@ -119,6 +135,9 @@ for (const mode of ['http-first', 'socket-first', 'text-client', 'text-failure',
       }
       if (mode === 'http-first' || mode === 'socket-first') {
         assert.equal(server.evidence.binary, 1);
+      }
+      if (mode === 'close-handshake') {
+        assert.equal(server.evidence.closes, 2, 'One CLOSE per local/peer handshake');
       }
     } finally { await server.close(); }
   });
