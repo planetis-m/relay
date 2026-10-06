@@ -92,10 +92,7 @@ proc appendWriteCb(buffer: ptr char; size, nitems: csize_t; userdata: pointer): 
 
 proc newResponse(request: RequestWrap): Response {.inline.} =
   Response(
-    code: HttpCode(0),
     url: request.spec.url,
-    headers: @[],
-    body: "",
     request: RequestInfo(
       verb: request.spec.verb,
       url: move request.spec.url,
@@ -268,7 +265,7 @@ proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     maxRedirects = 10): HttpClient =
   ## Call close or abort before releasing the client.
   let client = HttpClient(defaultTimeoutMs: max(1, defaultTimeoutMs),
-    maxRedirects: max(0, maxRedirects), outstanding: 0)
+    maxRedirects: max(0, maxRedirects))
   initCurl()
   initLock(client.lock)
   initCond(client.wakeCond)
@@ -278,7 +275,7 @@ proc newHttpClient*(maxInFlight = 16; defaultTimeoutMs = 60_000;
     for _ in 0..<max(1, maxInFlight):
       client.availableEasy.add(initEasy())
     createThread(client.thread, workerMain, addr client[])
-  except Exception:
+  except CatchableError:
     reset(client.availableEasy)
     reset(client.multi)
     cleanupCurl()
@@ -355,12 +352,7 @@ proc startRequests*(client: HttpClient; batch: var RequestBatch) =
       raise newException(IOError, "HTTP worker stopped")
 
     for request in batch.requests.mitems:
-      client.queue.addLast(RequestWrap(
-        spec: move request,
-        responseBody: "",
-        responseHeadersRaw: "",
-        easy: default(Easy)
-      ))
+      client.queue.addLast(RequestWrap(spec: move request))
       inc client.outstanding
     batch.requests.setLen(0)
 
@@ -376,12 +368,7 @@ proc startRequest*(client: HttpClient; request: sink RequestSpec) =
     if client.state != csRunning:
       raise newException(IOError, "HTTP worker stopped")
 
-    client.queue.addLast(RequestWrap(
-      spec: request,
-      responseBody: "",
-      responseHeadersRaw: "",
-      easy: default(Easy)
-    ))
+    client.queue.addLast(RequestWrap(spec: request))
     inc client.outstanding
 
     signal(client.wakeCond)
