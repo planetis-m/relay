@@ -4,7 +4,7 @@ Import `relay/websocket`. `WebSocketClient` owns persistent text/binary connecti
 and offers blocking and incremental operations on the same client, like `HttpClient`.
 Connection IDs identify connections owned by that client; they own no resources.
 See the [README example](../README.md#persistent-websockets) or
-[runnable echo example](../examples/websocket_echo.nim).
+[runnable multiple-connection example](../examples/websocket_multi.nim).
 
 Build with `--threads:on --mm:atomicArc` and a thread-safe, WebSocket-enabled
 libcurl 8.14+ with matching headers.

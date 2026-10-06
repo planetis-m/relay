@@ -291,53 +291,58 @@ nim test tests/ci.nims
 
 ## Persistent WebSockets
 
-`startConnect` and `startSend` return immediately, and one loop drains completions
-and incoming events:
+One `WebSocketClient` can connect and send on multiple sockets concurrently.
+`startConnect` and `startSend` return immediately; one loop handles their completions
+and each connection's events. This example sends "hello" to two echo servers:
 ```nim
+import std/os
 import relay/websocket
 
 let client = newWebSocketClient()
 try:
-  let endpoints = ["wss://example.com/chat", "wss://example.com/feed",
-    "wss://example.com/alerts"]
+  let endpoints = ["wss://example.com/chat", "wss://example.com/feed"]
   var connectOps: seq[OperationId] = @[]
+  var connections: seq[ConnectionId] = @[]
   for endpoint in endpoints:
-    connectOps.add(client.startConnect(endpoint).operationId)
+    let started = client.startConnect(endpoint)
+    connectOps.add(started.operationId)
+    connections.add(started.connectionId)
 
-  var outstanding = endpoints.len # accepted connect/send operations
-  var open: seq[ConnectionId] = @[]
-  var replies = 0
+  var pending = endpoints.len
+  var remaining = endpoints.len
 
-  while outstanding > 0 or replies < open.len:
-    # Block while nothing is open yet; afterwards poll so events flow too.
+  while pending > 0 or remaining > 0:
+    # Operation IDs distinguish connect completions from send completions.
     var completion: WebSocketResult
-    let ready =
-      if open.len == 0: client.waitForResult(completion)
-      else: client.pollForResult(completion)
-    if ready:
-      dec outstanding
-      if completion.operationId in connectOps: # a socket finished connecting
-        if completion.error.kind == teNone:
-          open.add(completion.connectionId)
-          inc outstanding # the send completes too
-          discard client.startSend(completion.connectionId,
-            WebSocketMessage(kind: wmText, data: "hello"))
-    else:
-      for i in 0..<open.len:
-        var event: WebSocketEvent
-        if client.waitForEvent(open[i], event, 10) and event.kind == weMessage:
+    while client.pollForResult(completion):
+      dec pending
+      if completion.operationId in connectOps and completion.error.kind == teNone:
+        discard client.startSend(completion.connectionId,
+          WebSocketMessage(kind: wmText, data: "hello"))
+        inc pending
+
+    for i, id in connections:
+      var event: WebSocketEvent
+      while client.pollForEvent(id, event):
+        case event.kind
+        of weMessage:
           echo "socket ", i, ": ", event.message.data
-          inc replies
+          client.startCloseConnection(id)
+        of weClosed:
+          dec remaining
+    sleep(1)
 finally:
   client.close()
 ```
 
-Blocking `connect` / `send` / `receive` remain available on an idle client. See
-[WebSockets](docs/WEBSOCKETS.md) for limits, timeouts and lifecycle, or
-[the runnable example](examples/websocket_echo.nim).
+Run [the multiple-connection example](examples/websocket_multi.nim) with your echo URLs:
+`nim c -r examples/websocket_multi.nim ws://localhost:8080/chat ws://localhost:8080/feed`.
+The [blocking echo example](examples/websocket_echo.nim) shows `connect` / `send` /
+`receive`. Blocking connect/send require an idle operation pipeline and exclusive
+submission/result access. See [WebSockets](docs/WEBSOCKETS.md) for the API contract.
 
 - Consume terminal events or call `closeConnection` to free slots counted by `maxConnections`.
-- Use one result consumer per client and one receive/event consumer per connection.
+- Route operation completions through one result loop; each connection has its own event queue.
 - Call `close` / `abort` on the creating thread after other callers finish.
 
 Local WebSocket checks require Node.js and OpenSSL:
