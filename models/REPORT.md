@@ -1,4 +1,4 @@
-The HTTP model exposes an accepted request that can lose its completion during abort.
+The HTTP model exposes an abort path that skips internal completion publication.
 WebSocket's checked properties have no violation within the stated finite bounds.
 Direct Tlanif results are recorded below. Temporal liveness is discussed from the
 source; Tlanif's safety CLI does not prove eventual progress.
@@ -24,11 +24,20 @@ HTTP's completion loss follows this legal schedule in
 | 7 | Worker publishes stopped and broadcasts | Accepted request queued without completion |
 
 Both Tlanif evaluators produce an eight-state shortest trace. Owner join subsequently
-resets queue and outstanding, abandoning that request. This violates the README's
-“Every request yields exactly one RequestResult” behavior while respecting submission
-and owner-shutdown threading constraints. Worker shutdown completes; the failing
-progress property is completion delivery, not worker deadlock. No result waiter exists
+resets queue and outstanding, abandoning that request. This fails the internal
+exactly-once publication guarantee derived from the README's unqualified “Every request
+yields exactly one RequestResult” statement. Worker shutdown completes; the modeled
+failure concerns completion publication, not worker deadlock. No result waiter exists
 in this counterexample.
+
+The production impact is limited by the HTTP shutdown contract: other callers must
+finish before abort, unread results are discarded on join, and result retrieval after
+join is unsupported. Thus this trace does not demonstrate a user-visible lost result,
+hang or resource leak under supported use. Classify it as a TRACED internal consistency
+issue and shutdown-contract ambiguity, not a confirmed runtime release blocker. Either
+flush this abort path consistently or explicitly exempt owner-aborted work from the
+unqualified completion promise. A deterministic regression is needed if publication
+during abort is intended as an implementation guarantee.
 
 The ordinary workerMain abort branch flushes; the waitForWorkOrClose abort branch does
 not. An idle worker can also be signalled by submission and aborted before rechecking
@@ -169,3 +178,10 @@ b1476e1a11d3b1783b9d12f1e0c52cf69453e4656d3f5dbcc3aa3d717ba53884
 
 All temporary variants were removed. The repository contains the three commented
 specifications and their README/report, with no model scripts or generated caches.
+
+The production-readiness review also reran `nim test tests/ci.nims` on 2026-10-06:
+all 13 standalone test programs passed with threads and atomicArc enabled. This was
+the default suite, not an ASan/TSan run or a reproducer for the specific abort schedule.
+There is no confirmed runtime defect from this modeling work. WebSocket safety results
+and the passing suite are positive evidence, but do not establish temporal progress,
+memory safety or complete real-peer frame/close interoperability.
