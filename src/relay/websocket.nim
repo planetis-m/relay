@@ -111,7 +111,7 @@ proc completion(client: var WebSocketClientObj; cmd: sink Command; error = Trans
   release(client.lock)
 
 proc finish(client: var WebSocketClientObj; conn: Connection;
-    error: TransportError) =
+    error: sink TransportError) =
   if conn.mailbox.state == cnFinished: return
   if conn.mailbox.state == cnConnecting:
     client.completion(move conn.connectCommand, error)
@@ -301,7 +301,7 @@ proc processCommands(client: var WebSocketClientObj; active: var seq[Connection]
       acquire(client.lock)
       let mailbox = client.connection(cmd.connectionId)
       release(client.lock)
-      let conn = Connection(mailbox: mailbox, connectCommand: move cmd)
+      let conn = Connection(mailbox: mailbox, connectCommand: cmd)
       active.add(conn)
       if getMonoTime() >= conn.connectCommand.deadline:
         client.finish(conn, newTransportError(teTimeout, "WebSocket connect timed out"))
@@ -470,7 +470,7 @@ proc stop(client: var WebSocketClientObj; aborting: static[bool]) =
 proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
     defaultTimeoutMs = 60_000; maxMessageBytes = 32 * 1024 * 1024;
     maxQueuedBytes = 32 * 1024 * 1024; closeTimeoutMs = 100;
-    bypassProxy = false; proxy = ""; caInfo = ""): WebSocketClient =
+    bypassProxy = false; proxy: sink string = ""; caInfo: sink string = ""): WebSocketClient =
   ## Start a worker. Nonpositive limits clamp to one.
   ## Call close or abort before releasing the client.
   let client = WebSocketClient(maxConnections: max(1, maxConnections),
@@ -501,14 +501,13 @@ proc abort*(client: WebSocketClient) =
   ## Cancel all work and join. Does not wait for peers or consumer queue space.
   if client != nil: client[].stop(true)
 
-proc enqueue(client: var WebSocketClientObj; command: sink Command):
+proc enqueue(client: var WebSocketClientObj; cmd: sink Command):
     tuple[connectionId: ConnectionId, operationId: OperationId] =
   # Caller holds client.lock.
   if client.state != csRunning:
     raise newException(IOError, "WebSocket worker stopped")
   if client.outstanding >= client.maxCommands:
     raise newException(IOError, "WebSocket command queue is full")
-  var cmd = command
   case cmd.kind
   of wcConnect:
     if client.connections.len >= client.maxConnections:
@@ -526,7 +525,7 @@ proc enqueue(client: var WebSocketClientObj; command: sink Command):
   result = (cmd.connectionId, cmd.operationId)
   if cmd.kind == wcConnect:
     client.connections.add(Mailbox(id: cmd.connectionId))
-  client.commands.addLast(move cmd)
+  client.commands.addLast(cmd)
   client.multi.wakeup()
 
 proc startConnect*(client: WebSocketClient; url: sink string; timeoutMs = 0):
@@ -613,7 +612,7 @@ proc retrieveEvent(client: WebSocketClient; id: ConnectionId; item: var WebSocke
       conn.queuedBytes -= item.message.data.len
       result = true
     elif conn.state == cnFinished:
-      item = WebSocketEvent(connectionId: id, kind: weClosed, error: conn.terminalError)
+      item = WebSocketEvent(connectionId: id, kind: weClosed, error: move conn.terminalError)
       for i in 0..<client.connections.len:
         if client.connections[i].id == id:
           client.connections.delete(i)
@@ -686,7 +685,7 @@ proc receive*(client: WebSocketClient; id: ConnectionId;
   if client.retrieveEvent(id, event, true, timeoutMs, required = true):
     result = WebSocketReceiveResult(
       kind: if event.kind == weMessage: wrMessage else: wrClosed,
-      message: move event.message, error: move event.error)
+      message: event.message, error: event.error)
   else:
     result = WebSocketReceiveResult(kind: wrTimedOut,
       error: newTransportError(teTimeout, "WebSocket receive timed out"))

@@ -194,7 +194,7 @@ proc dispatchQueuedRequests(client: var HttpClientObj) =
     release(client.lock)
 
     if not done:
-      request.easy = move easy
+      request.easy = easy
       var error: TransportError
       try:
         configureEasy(client, request, request.easy)
