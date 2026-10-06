@@ -291,26 +291,50 @@ nim test tests/ci.nims
 
 ## Persistent WebSockets
 
-Use `WebSocketClient` for blocking text or binary messages:
+`startConnect` and `startSend` return immediately, and one loop drains completions
+and incoming events:
 ```nim
 import relay/websocket
 
 let client = newWebSocketClient()
 try:
-  let opened = client.connect("wss://example.com/socket")
-  if opened.error.kind == teNone:
-    discard client.send(opened.connectionId, "hello")
-    let item = client.receive(opened.connectionId)
-    if item.kind == wrMessage:
-      echo item.message.data
+  let endpoints = ["wss://example.com/chat", "wss://example.com/feed",
+    "wss://example.com/alerts"]
+  var connectOps: seq[OperationId] = @[]
+  for endpoint in endpoints:
+    connectOps.add(client.startConnect(endpoint).operationId)
+
+  var outstanding = endpoints.len # accepted connect/send operations
+  var open: seq[ConnectionId] = @[]
+  var replies = 0
+
+  while outstanding > 0 or replies < open.len:
+    # Block while nothing is open yet; afterwards poll so events flow too.
+    var completion: WebSocketResult
+    let ready =
+      if open.len == 0: client.waitForResult(completion)
+      else: client.pollForResult(completion)
+    if ready:
+      dec outstanding
+      if completion.operationId in connectOps: # a socket finished connecting
+        if completion.error.kind == teNone:
+          open.add(completion.connectionId)
+          inc outstanding # the send completes too
+          discard client.startSend(completion.connectionId,
+            WebSocketMessage(kind: wmText, data: "hello"))
+    else:
+      for i in 0..<open.len:
+        var event: WebSocketEvent
+        if client.waitForEvent(open[i], event, 10) and event.kind == weMessage:
+          echo "socket ", i, ": ", event.message.data
+          inc replies
 finally:
   client.close()
 ```
 
-The same client supports multiple connections and incremental operations. Blocking
-connect/send require an idle operation pipeline and exclusive submission/result access,
-like HTTP's blocking helpers. See [WebSockets](docs/WEBSOCKETS.md) for limits, timeouts
-and lifecycle, or [the runnable example](examples/websocket_echo.nim).
+Blocking `connect` / `send` / `receive` remain available on an idle client. See
+[WebSockets](docs/WEBSOCKETS.md) for limits, timeouts and lifecycle, or
+[the runnable example](examples/websocket_echo.nim).
 
 - Consume terminal events or call `closeConnection` to free slots counted by `maxConnections`.
 - Use one result consumer per client and one receive/event consumer per connection.
