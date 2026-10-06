@@ -1,0 +1,276 @@
+(stmts#Frame and close scheduling abstraction of readFrames/writeFrames/requestClose/serviceConnection.
+ phase: open=0 closing=1 finished=2. request: none=0 close=1 cancel=2.
+ controls: PONG=1 CLOSE=2. Payload sizes and offsets are bounded abstractions, not wire bytes.
+ Two accepted sends initially, three receive publications, message/byte limit two, control capacity two (implementation eight).
+ Finishing discards worker buffers but preserves queued receive messages.#
+  (variables :phase.0. :request.0. :peer.0. :closeSent.0. :started.0. :offset.0. :pending.0.
+    :successful.0. :failed.0. :controls.0. :controlOffset.0. :armed.0. :due.0. :incomingActive.0.
+    :incomingKind.0. :incomingBytes.0. :events.0. :queuedBytes.0. :messages.0. :terminal.0.)
+  (def :Init.0.#Open connection with two accepted sends. Message/byte/event/control bounds are two; up to
+    three message publications exercise overflow.#
+    (and
+      (prime phase.0. 0)
+      (prime request.0. 0)
+      (prime peer.0. (false))
+      (prime closeSent.0. 0)
+      (prime started.0. (false))
+      (prime offset.0. 0)
+      (prime pending.0. 2)
+      (prime successful.0. 0)
+      (prime failed.0. 0)
+      (prime controls.0. (seq))
+      (prime controlOffset.0. 0)
+      (prime armed.0. 0)
+      (prime due.0. (false))
+      (prime incomingActive.0. (false))
+      (prime incomingKind.0. 0)
+      (prime incomingBytes.0. 0)
+      (prime events.0. (seq))
+      (prime queuedBytes.0. 0)
+      (prime messages.0. 0)
+      (prime terminal.0. 0)))
+  (def :Finish.0.#Abstract terminal transition plus worker buffer removal. Pending sends complete
+    unsuccessfully; published receive events remain intact.#
+    (and
+      (prime phase.0. 2)
+      (prime failed.0. (plus failed.0. pending.0.))
+      (prime pending.0. 0)
+      (prime started.0. (false))
+      (prime offset.0. 0)
+      (prime controls.0. (seq))
+      (prime controlOffset.0. 0)
+      (prime incomingActive.0. (false))
+      (prime incomingBytes.0. 0)
+      (prime incomingKind.0. 0)))
+  (def :LocalClose.0.#Observe a close request without replacing cancel. Client-side snapshot races are modeled in
+    websocket_lifecycle.nif.# (and (neq phase.0. 2) (eq request.0. 0) (prime request.0. 1)))
+  (def :Cancel.0.#Cancellation overrides close. Once observed by the worker it avoids waiting for peers or a
+    writable socket.# (and (neq phase.0. 2) (neq request.0. 2) (prime request.0. 2)))
+  (def :ServiceCancel.0.#serviceConnection prioritizes an observed cancel over the close handshake.# (and (neq phase.0. 2) (eq request.0. 2) Finish.0.))
+  (def :ServiceClose.0.#requestClose appends one CLOSE and arms the deadline only while open. A full control FIFO is
+    a per-connection protocol failure.#
+    (and
+      (eq phase.0. 0)
+      (eq request.0. 1)
+      (if
+        (eq phase.0. 0)
+        (if
+          (lt (len controls.0.) 2)
+          (and
+            (prime controls.0. (append controls.0. 2))
+            (prime phase.0. 1)
+            (prime armed.0. (plus armed.0. 1)))
+          Finish.0.)
+        (and))))
+  (def :PeerClose.0.#readFrames records one peer CLOSE. If already closing, no second CLOSE or deadline
+    initialization is allowed.#
+    (and
+      (neq phase.0. 2)
+      (not peer.0.)
+      (neq request.0. 2)
+      (prime peer.0. (true))
+      (if
+        (eq phase.0. 0)
+        (if
+          (lt (len controls.0.) 2)
+          (and
+            (prime controls.0. (append controls.0. 2))
+            (prime phase.0. 1)
+            (prime armed.0. (plus armed.0. 1)))
+          Finish.0.)
+        (and))))
+  (def :Tick.0.#Abstract expiry of the single close deadline. Peer replies do not clear due or rearm the
+    deadline.# (and (eq phase.0. 1) (not due.0.) (prime due.0. (true))))
+  (def :CloseFinished.0.#Finish when both close flags hold or when the original deadline expires, even with a
+    partially blocked frame.#
+    (and (eq phase.0. 1) (or due.0. (and peer.0. (eq closeSent.0. 1))) Finish.0.))
+  (def :TransferFailure.0.#Curl transfer error ends only this connection. Error codes/strings are outside this
+    scheduling abstraction.# (and (neq phase.0. 2) Finish.0.))
+  (def :SendTimeout.0.#Any queued send deadline can end the whole connection and its pending sends; source
+    deadlines include queue residence.# (and (neq phase.0. 2) (gt pending.0. 0) Finish.0.))
+  (def :DataAgain.0.#writeData sets cfFrameStarted even when sendFrame returns AGAIN with offset zero. started
+    cannot be derived from offset.#
+    (and
+      (and
+        (neq phase.0. 2)
+        (neq request.0. 2)
+        (gt pending.0. 0)
+        (eq controlOffset.0. 0)
+        (or started.0. (and (neq phase.0. 1) (eq (len controls.0.) 0))))
+      (not started.0.)
+      (prime started.0. (true))))
+  (def :DataPartial.0.#writeFrames may continue a started data frame while closing, but cannot switch to a control
+    frame partway through it.#
+    (and
+      (and
+        (neq phase.0. 2)
+        (neq request.0. 2)
+        (gt pending.0. 0)
+        (eq controlOffset.0. 0)
+        (or started.0. (and (neq phase.0. 1) (eq (len controls.0.) 0))))
+      (lt offset.0. 1)
+      (prime started.0. (true))
+      (prime offset.0. 1)))
+  (def :DataComplete.0.#Successful head data-frame completion releases one send. Offset and frame-start state reset
+    before control traffic.#
+    (and
+      (and
+        (neq phase.0. 2)
+        (neq request.0. 2)
+        (gt pending.0. 0)
+        (eq controlOffset.0. 0)
+        (or started.0. (and (neq phase.0. 1) (eq (len controls.0.) 0))))
+      (prime started.0. (false))
+      (prime offset.0. 0)
+      (prime pending.0. (minus pending.0. 1))
+      (prime successful.0. (plus successful.0. 1))))
+  (def :ControlPartial.0.#Control frames cannot overlap partial data frames. Once partial, a control frame must finish
+    before starting data.#
+    (and
+      (and (neq phase.0. 2) (neq request.0. 2) (not started.0.) (gt (len controls.0.) 0))
+      (eq controlOffset.0. 0)
+      (prime controlOffset.0. 1)))
+  (def :ControlComplete.0.#Pop the control FIFO head. Completing CLOSE records exactly one close-sent flag; PONG does
+    not.#
+    (and
+      (and (neq phase.0. 2) (neq request.0. 2) (not started.0.) (gt (len controls.0.) 0))
+      (prime closeSent.0. (if (eq (apply controls.0. 1) 2) (plus closeSent.0. 1) closeSent.0.))
+      (prime controls.0.
+        (if
+          (eq (len controls.0.) 1)
+          (seq)
+          (if
+            (eq (len controls.0.) 2)
+            (seq (apply controls.0. 2))
+            (seq (apply controls.0. 2) (apply controls.0. 3)))))
+      (prime controlOffset.0. 0)))
+  (def :Ping.0.#A fragmented incoming message can coexist with queued PONGs. Control capacity overflow is a
+    protocol failure.#
+    (and
+      (and (neq phase.0. 2) (not peer.0.) (neq request.0. 2))
+      (if (lt (len controls.0.) 2) (prime controls.0. (append controls.0. 1)) Finish.0.)))
+  (def :Chunk.0.#readFrames abstracts TEXT/BINARY kind, delivered size n, frame bytesLeft and message
+    finality. Reject changed fragment kind or projected size above the limit before growing the
+    buffer; publish only inside both event and byte budgets.#
+    (and
+      (and (neq phase.0. 2) (not peer.0.) (neq request.0. 2))
+      (lt messages.0. 3)
+      (exists :k.0
+        (set 1 2)
+        (exists :n.0
+          (range 0 2)
+          (exists :left.0
+            (range 0 3)
+            (exists :last.0
+              (bool)
+              (if
+                (or
+                  (and incomingActive.0. (neq incomingKind.0. k.0))
+                  (gt (plus (plus incomingBytes.0. n.0) left.0) 2))
+                Finish.0.
+                (let
+                  (bind :size.0 (plus incomingBytes.0. n.0))
+                  (if
+                    (and (eq left.0 0) last.0)
+                    (if
+                      (or (ge (len events.0.) 2) (gt (plus queuedBytes.0. size.0) 2))
+                      Finish.0.
+                      (and
+                        (prime events.0. (append events.0. size.0))
+                        (prime queuedBytes.0. (plus queuedBytes.0. size.0))
+                        (prime incomingBytes.0. 0)
+                        (prime incomingActive.0. (false))
+                        (prime incomingKind.0. 0)
+                        (prime messages.0. (plus messages.0. 1))))
+                    (and
+                      (prime incomingActive.0. (true))
+                      (prime incomingKind.0. k.0)
+                      (prime incomingBytes.0. size.0)))))))))))
+  (def :InvalidPayload.0.#Abstract invalid UTF-8/control payload/code or unsupported frames. Actual byte parsing is
+    not modeled.# (and (and (neq phase.0. 2) (not peer.0.) (neq request.0. 2)) Finish.0.))
+  (def :ConsumeMessage.0.#FIFO message retrieval subtracts that message size from queuedBytes and leaves terminal
+    status for later.#
+    (and
+      (gt (len events.0.) 0)
+      (prime queuedBytes.0. (minus queuedBytes.0. (apply events.0. 1)))
+      (prime events.0.
+        (if
+          (eq (len events.0.) 1)
+          (seq)
+          (if
+            (eq (len events.0.) 2)
+            (seq (apply events.0. 2))
+            (seq (apply events.0. 2) (apply events.0. 3)))))))
+  (def :ConsumeTerminal.0.#Terminal retrieval occurs only after all queued messages, and only once.#
+    (and (eq phase.0. 2) (eq (len events.0.) 0) (eq terminal.0. 0) (prime terminal.0. 1)))
+  (def :Inv.0.#Safety: send conservation, one CLOSE/deadline, partial-frame exclusion, finite queue/message
+    sizes, exact queued-byte sum and message-before-terminal delivery.#
+    (and
+      (in phase.0. (range 0 2))
+      (eq (plus (plus pending.0. successful.0.) failed.0.) 2)
+      (in pending.0. (range 0 2))
+      (in successful.0. (range 0 2))
+      (in failed.0. (range 0 2))
+      (le armed.0. 1)
+      (le closeSent.0. 1)
+      (le
+        (plus
+          (card (setcomp :i.0 (range 1 (len controls.0.)) (eq (apply controls.0. i.0) 2)))
+          closeSent.0.)
+        1)
+      (implies (eq phase.0. 1) (eq armed.0. 1))
+      (implies (gt offset.0. 0) started.0.)
+      (implies started.0. (and (gt pending.0. 0) (eq controlOffset.0. 0)))
+      (implies (gt controlOffset.0. 0) (and (not started.0.) (gt (len controls.0.) 0)))
+      (le (len controls.0.) 2)
+      (le (len events.0.) 2)
+      (eq queuedBytes.0.
+        (if
+          (eq (len events.0.) 0)
+          0
+          (if
+            (eq (len events.0.) 1)
+            (apply events.0. 1)
+            (plus (apply events.0. 1) (apply events.0. 2)))))
+      (in queuedBytes.0. (range 0 2))
+      (in incomingBytes.0. (range 0 2))
+      (implies (not incomingActive.0.) (eq incomingBytes.0. 0))
+      (implies (eq phase.0. 2) (and (eq pending.0. 0) (eq (len controls.0.) 0) (not started.0.)))
+      (le terminal.0. 1)
+      (implies (eq terminal.0. 1) (and (eq phase.0. 2) (eq (len events.0.) 0)))))
+  (def :Next.0.#Finite frame/environment interleavings; always-stutter also permits idling. Error category
+    and byte-level wire parsing are abstracted.#
+    (or LocalClose.0. Cancel.0. ServiceCancel.0. ServiceClose.0. PeerClose.0. Tick.0.
+      CloseFinished.0. TransferFailure.0. SendTimeout.0. DataAgain.0. DataPartial.0. DataComplete.0.
+      ControlPartial.0. ControlComplete.0. Ping.0. Chunk.0. InvalidPayload.0. ConsumeMessage.0.
+      ConsumeTerminal.0.))
+  (def :FairCancel.0.#Observed cancellation is eventually serviced.# (or ServiceCancel.0.))
+  (def :FairClose.0.#Observed local close is eventually serviced.# (or ServiceClose.0.))
+  (def :FairClock.0.#A closing connection eventually reaches its deadline.# (or Tick.0.))
+  (def :FairFinish.0.#An expired/completed close handshake eventually finishes.# (or CloseFinished.0.))
+  (def :FairSendClock.0.#Pending sends eventually hit a deadline or finish; no peer cooperation is assumed.# (or SendTimeout.0.))
+  (def :GoalClose.0.#Once requested/started, closing must finish under the explicit service/clock fairness
+    assumptions.# (or (and (eq phase.0. 0) (eq request.0. 0)) (eq phase.0. 2)))
+  (def :GoalSends.0.#The two accepted sends eventually complete, successfully or unsuccessfully.# (eq pending.0. 0))
+  (def :WitnessPartialDataClose.0.#Reachability probe: an intended bounded frame/queue state is reached.# (and (eq phase.0. 1) started.0.))
+  (def :WitnessPartialControlClose.0.#Reachability probe: an intended bounded frame/queue state is reached.# (and (eq phase.0. 1) (gt controlOffset.0. 0)))
+  (def :WitnessPeerBeforeCloseSent.0.#Reachability probe: the peer can close before the local CLOSE is transmitted.# (and peer.0. (eq closeSent.0. 0)))
+  (def :WitnessCloseSentBeforePeer.0.#Reachability probe: the local CLOSE can be transmitted before a peer reply.# (and (eq closeSent.0. 1) (not peer.0.)))
+  (def :WitnessQueueExact.0.#Reachability probe: an intended bounded frame/queue state is reached.# (eq queuedBytes.0. 2))
+  (def :WitnessEmptyMessage.0.#Reachability probe: a zero-byte receive message is a real queued event.# (and (gt (len events.0.) 0) (eq (apply events.0. 1) 0)))
+  (def :WitnessFinishedMessages.0.#Reachability probe: terminal state preserves already-published messages.# (and (eq phase.0. 2) (gt (len events.0.) 0)))
+  (def :WitnessPartialIncomingPing.0.#Reachability probe: incoming fragmentation and outgoing control traffic can coexist.# (and incomingActive.0. (gt (len controls.0.) 0)))
+  (def :WitnessDeadlineWithoutReply.0.#Reachability probe: closing can finish without a peer reply.# (and due.0. (not peer.0.) (eq phase.0. 2)))
+  (def :WitnessClosingWithoutDeadline.0.#Reachability probe: must be unreachable; closing always has an armed deadline.# (and (eq phase.0. 1) (eq armed.0. 0)))
+  (def :WitnessDataAndControlPartial.0.#Reachability probe: must be unreachable; partial data and control writes cannot overlap.# (and started.0. (gt controlOffset.0. 0)))
+  (def :WitnessCountLimitEmpty.0.#Reachability probe: two empty messages fill event count independently of byte capacity.#
+    (and (eq phase.0. 0) (eq (len events.0.) 2) (eq queuedBytes.0. 0)))
+  (def :WitnessByteLimitOneSlot.0.#Reachability probe: one full-size message fills bytes while another event slot remains.#
+    (and (eq phase.0. 0) (eq (len events.0.) 1) (eq queuedBytes.0. 2)))
+  (spec
+    (always-stutter Init.0. Next.0.
+      (tuple phase.0. request.0. peer.0. closeSent.0. started.0. offset.0. pending.0. successful.0.
+        failed.0. controls.0. controlOffset.0. armed.0. due.0. incomingActive.0. incomingKind.0.
+        incomingBytes.0. events.0. queuedBytes.0. messages.0. terminal.0.)))
+  (check Inv.0.)
+)

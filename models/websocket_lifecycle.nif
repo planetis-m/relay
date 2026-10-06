@@ -1,0 +1,757 @@
+(stmts#Lifecycle abstraction of src/relay/websocket.nim. See README.md for source map,
+ bounds, atomicity, fairness and intentionally excluded caller-precondition violations.
+ client: running=0 stopping=1 aborting=2 stopped=3. phase: unused=0 connecting=1
+ open=2 closing=3 finished=4. stage: unused=0 shared=1 batch=2 connect=3 send=4
+ result=5 consumed=6. pc: detach=0 commands=1 upgrades=2 reserved=3 service=4
+ notify=5 poll=6 publish-upgrade=7 fatal-drain=8 fatal-finish=9 exit=10.
+ request: none=0 close=1 cancel=2. waiter: idle=0 asleep=1 awake=2.
+ waitKind: event=1 disposal=2. Omitted primes stutter as specified by Tlanif.#
+  (constants :Ids.0. :Ops.0. :Slots.0. :Budget.0. :SeedOpen.0.)
+  (assign Ids.0. (range 1 1))
+  (assign Ops.0. (range 1 2))
+  (assign Slots.0. 1)
+  (assign Budget.0. 2)
+  (assign SeedOpen.0. (false))
+  (variables :client.0. :closed.0. :pc.0. :scan.0. :snapshot.0. :phase.0. :retained.0. :active.0.
+    :request.0. :commands.0. :batch.0. :results.0. :stage.0. :target.0. :kind.0. :produced.0.
+    :outstanding.0. :events.0. :terminal.0. :waiter.0. :waitKind.0. :expired.0. :resultWait.0.
+    :due.0. :sends.0. :readRequest.0. :observedRequest.0.)
+  (def :Init.0.#Finite initial state. All variables are primed. SeedOpen describes connects completed before
+    the duplex horizon.#
+    (and
+      (prime client.0. 0)
+      (prime closed.0. (false))
+      (prime pc.0. 0)
+      (prime scan.0. 1)
+      (prime snapshot.0. 0)
+      (prime phase.0. (funof :c.0 Ids.0. (if SeedOpen.0. 2 0)))
+      (prime retained.0. (funof :c.0 Ids.0. SeedOpen.0.))
+      (prime active.0. (funof :c.0 Ids.0. SeedOpen.0.))
+      (prime request.0. (funof :c.0 Ids.0. 0))
+      (prime commands.0. (seq))
+      (prime batch.0. (seq))
+      (prime results.0. (seq))
+      (prime stage.0. (funof :o.0 Ops.0. 0))
+      (prime target.0. (funof :o.0 Ops.0. 0))
+      (prime kind.0. (funof :o.0 Ops.0. 0))
+      (prime produced.0. (funof :o.0 Ops.0. 0))
+      (prime outstanding.0. 0)
+      (prime events.0. (funof :c.0 Ids.0. 0))
+      (prime terminal.0. (funof :c.0 Ids.0. 0))
+      (prime waiter.0. (funof :c.0 Ids.0. 0))
+      (prime waitKind.0. (funof :c.0 Ids.0. 0))
+      (prime expired.0. (funof :c.0 Ids.0. (false)))
+      (prime resultWait.0. 0)
+      (prime due.0. (funof :c.0 Ids.0. (false)))
+      (prime sends.0. (funof :c.0 Ids.0. (seq)))
+      (prime readRequest.0. (false))
+      (prime observedRequest.0. 0)))
+  (def :Retained.0.#Mailbox slot accounting counts finished mailboxes until terminal retrieval or disposal.# (setcomp :c.0 Ids.0. (apply retained.0. c.0)))
+  (def :SubmitConnect.0.#src/relay/websocket.nim: enqueue wcConnect. Admission reserves an operation budget entry and
+    a retained mailbox slot.#
+    (exists :c.0 Ids.0.
+      (exists :o.0 Ops.0.
+        (and
+          (eq client.0. 0)
+          (eq (apply phase.0. c.0) 0)
+          (eq (apply stage.0. o.0) 0)
+          (lt outstanding.0. Budget.0.)
+          (lt (card Retained.0.) Slots.0.)
+          (prime phase.0. (except phase.0. (mapsto c.0 1)))
+          (prime retained.0. (except retained.0. (mapsto c.0 (true))))
+          (prime stage.0. (except stage.0. (mapsto o.0 1)))
+          (prime target.0. (except target.0. (mapsto o.0 c.0)))
+          (prime kind.0. (except kind.0. (mapsto o.0 1)))
+          (prime commands.0. (append commands.0. o.0))
+          (prime outstanding.0. (plus outstanding.0. 1))))))
+  (def :SubmitSend.0.#enqueue wcSend under the documented successful-connect precondition. Completion consumption,
+    not publication, frees budget.#
+    (exists :c.0 Ids.0.
+      (exists :o.0 Ops.0.
+        (and
+          (eq client.0. 0)
+          (apply retained.0. c.0)
+          (eq (apply phase.0. c.0) 2)
+          (or SeedOpen.0.
+            (exists :connected.0 Ops.0.
+              (and
+                (eq (apply target.0. connected.0) c.0)
+                (eq (apply kind.0. connected.0) 1)
+                (eq (apply stage.0. connected.0) 6))))
+          (eq (apply request.0. c.0) 0)
+          (eq (apply stage.0. o.0) 0)
+          (lt outstanding.0. Budget.0.)
+          (prime stage.0. (except stage.0. (mapsto o.0 1)))
+          (prime target.0. (except target.0. (mapsto o.0 c.0)))
+          (prime kind.0. (except kind.0. (mapsto o.0 2)))
+          (prime commands.0. (append commands.0. o.0))
+          (prime outstanding.0. (plus outstanding.0. 1))))))
+  (def :RequestClose.0.#startCloseConnection stores srClose only over srNone; it never replaces a previously stored
+    srCancel.#
+    (exists :c.0 Ids.0.
+      (and
+        (eq client.0. 0)
+        (not closed.0.)
+        (apply retained.0. c.0)
+        (eq (apply request.0. c.0) 0)
+        (prime request.0. (except request.0. (mapsto c.0 1))))))
+  (def :Cancel.0.#cancel stores srCancel out of band. It bypasses command/result budget and overrides an
+    earlier close request.#
+    (exists :c.0 Ids.0.
+      (and
+        (eq client.0. 0)
+        (not closed.0.)
+        (apply retained.0. c.0)
+        (neq (apply request.0. c.0) 2)
+        (prime request.0. (except request.0. (mapsto c.0 2))))))
+  (def :Stop.0.#Owner requests graceful shutdown only after other callers finish. The worker can still have
+    accepted work and retained results.#
+    (and
+      (eq client.0. 0)
+      (and (eq resultWait.0. 0) (forall :c.0 Ids.0. (eq (apply waiter.0. c.0) 0)))
+      (prime client.0. 1)))
+  (def :Abort.0.#Owner abort bypasses peer handshakes. Consumer queue space is not needed to stop the worker.#
+    (and
+      (eq client.0. 0)
+      (and (eq resultWait.0. 0) (forall :c.0 Ids.0. (eq (apply waiter.0. c.0) 0)))
+      (prime client.0. 2)))
+  (def :Join.0.#stop joins an already-stopped worker and releases synchronization. closed is separate from
+    csStopped; retained data stays pollable.#
+    (and
+      (eq client.0. 3)
+      (not closed.0.)
+      (and (eq resultWait.0. 0) (forall :c.0 Ids.0. (eq (apply waiter.0. c.0) 0)))
+      (prime closed.0. (true))))
+  (def :Detach.0.#processCommands swaps the shared queue under the lock. New submissions remain in commands
+    while this detached batch is processed.#
+    (and
+      (eq pc.0. 0)
+      (prime batch.0. commands.0.)
+      (prime commands.0. (seq))
+      (prime stage.0. (funof :o.0 Ops.0. (if (eq (apply stage.0. o.0) 1) 2 (apply stage.0. o.0))))
+      (prime pc.0. 1)))
+  (def :Process.0.#FIFO batch dispatch creates worker-owned connects or appends sends. A send whose connection
+    finished publishes an unavailable result.#
+    (and
+      (eq pc.0. 1)
+      (gt (len batch.0.) 0)
+      (let
+        (bind :o.0 (apply batch.0. 1))
+        (bind :c.0 (apply target.0. o.0))
+        (and
+          (prime batch.0.
+            (if
+              (eq (len batch.0.) 1)
+              (seq)
+              (if
+                (eq (len batch.0.) 2)
+                (seq (apply batch.0. 2))
+                (seq (apply batch.0. 2) (apply batch.0. 3)))))
+          (if
+            (eq (apply kind.0. o.0) 1)
+            (and
+              (prime active.0. (except active.0. (mapsto c.0 (true))))
+              (prime stage.0. (except stage.0. (mapsto o.0 3))))
+            (if
+              (and (apply active.0. c.0) (eq (apply phase.0. c.0) 2))
+              (and
+                (prime stage.0. (except stage.0. (mapsto o.0 4)))
+                (prime sends.0. (except sends.0. (mapsto c.0 (append (apply sends.0. c.0) o.0)))))
+              (and
+                (if
+                  (eq (apply stage.0. o.0) 4)
+                  (prime sends.0.
+                    (except sends.0.
+                      (mapsto
+                        (apply target.0. o.0)
+                        (if
+                          (eq (len (apply sends.0. (apply target.0. o.0))) 1)
+                          (seq)
+                          (seq (apply (apply sends.0. (apply target.0. o.0)) 2))))))
+                  (and))
+                (prime stage.0. (except stage.0. (mapsto o.0 5)))
+                (prime produced.0.
+                  (except produced.0. (mapsto o.0 (plus (apply produced.0. o.0) 1))))
+                (prime results.0. (append results.0. o.0)))))))))
+  (def :CommandsDone.0.#Worker proceeds to curl completion/upgrade processing after exhausting the detached batch.# (and (eq pc.0. 1) (eq (len batch.0.) 0) (prime pc.0. 2) (prime scan.0. 1)))
+  (def :Upgrade.0.#upgrades publishes cnOpen in one lock region before publishing its connect result. These are
+    separate observable steps.#
+    (and
+      (eq pc.0. 2)
+      (in scan.0. Ids.0.)
+      (exists :o.0 Ops.0.
+        (and
+          (eq (apply target.0. o.0) scan.0.)
+          (eq (apply stage.0. o.0) 3)
+          (eq (apply phase.0. scan.0.) 1)
+          (not (apply due.0. scan.0.))
+          (prime phase.0. (except phase.0. (mapsto scan.0. 2)))
+          (prime pc.0. 7)))))
+  (def :PublishUpgrade.0.#Connect completion publication follows the phase change. No service/finish action can
+    intervene in this worker-only window.#
+    (and
+      (eq pc.0. 7)
+      (exists :o.0 Ops.0.
+        (and
+          (eq (apply target.0. o.0) scan.0.)
+          (eq (apply stage.0. o.0) 3)
+          (and
+            (if
+              (eq (apply stage.0. o.0) 4)
+              (prime sends.0.
+                (except sends.0.
+                  (mapsto
+                    (apply target.0. o.0)
+                    (if
+                      (eq (len (apply sends.0. (apply target.0. o.0))) 1)
+                      (seq)
+                      (seq (apply (apply sends.0. (apply target.0. o.0)) 2))))))
+              (and))
+            (prime stage.0. (except stage.0. (mapsto o.0 5)))
+            (prime produced.0. (except produced.0. (mapsto o.0 (plus (apply produced.0. o.0) 1))))
+            (prime results.0. (append results.0. o.0)))
+          (prime pc.0. 2)))))
+  (def :UpgradeSkip.0.#Finite scan abstracts an upgrade not yet ready. A due connect cannot upgrade successfully.# (and (eq pc.0. 2) (in scan.0. Ids.0.) (prime scan.0. (plus scan.0. 1))))
+  (def :Snapshot.0.#workerMain snapshots client.state once before servicing the active connections. A later
+    shutdown can be observed next turn.#
+    (and
+      (eq pc.0. 2)
+      (eq scan.0. (plus (card Ids.0.) 1))
+      (prime snapshot.0. client.0.)
+      (prime scan.0. 1)
+      (prime pc.0. 4)))
+  (def :ReadRequest.0.#serviceConnection separately snapshots mailbox.request. A cancel stored after this read does
+    not retract a send completed this turn.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      (apply active.0. scan.0.)
+      (neq (apply phase.0. scan.0.) 4)
+      (not readRequest.0.)
+      (prime observedRequest.0. (apply request.0. scan.0.))
+      (prime readRequest.0. (true))))
+  (def :ServiceClose.0.#requestClose changes cnOpen to cnClosing. Exact control frames and close deadline
+    initialization live in the frame model.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      (apply active.0. scan.0.)
+      readRequest.0.
+      (eq (apply phase.0. scan.0.) 2)
+      (not
+        (or
+          (eq observedRequest.0. 2)
+          (eq snapshot.0. 2)
+          (and (eq snapshot.0. 1) (eq (apply phase.0. scan.0.) 1))))
+      (or (eq observedRequest.0. 1) (eq snapshot.0. 1))
+      (prime phase.0. (except phase.0. (mapsto scan.0. 3)))))
+  (def :BeginFinish.0.#Abstract per-connection failure, timeout or mandatory cancellation. pc=12 keeps finish
+    publication from interleaving with service.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      (apply active.0. scan.0.)
+      readRequest.0.
+      (in (apply phase.0. scan.0.) (set 1 2 3))
+      (prime pc.0. 12)))
+  (def :TickDue.0.#Clock abstraction for finite connect/send/close deadlines. Weak fairness is an explicit
+    assumption, not a real-time timing proof.#
+    (exists :c.0 Ids.0.
+      (and
+        (in (apply phase.0. c.0) (set 1 2 3))
+        (or
+          (eq (apply phase.0. c.0) 1)
+          (eq (apply phase.0. c.0) 3)
+          (exists :pendingSend.0 Ops.0.
+            (and
+              (eq (apply target.0. pendingSend.0) c.0)
+              (in (apply stage.0. pendingSend.0) (set 1 2 4))
+              (eq (apply kind.0. pendingSend.0) 2))))
+        (not (apply due.0. c.0))
+        (prime due.0. (except due.0. (mapsto c.0 (true)))))))
+  (def :FinishCompletion.0.#finish publishes owned pending completions separately under the lock. Send completion
+    selection follows the per-connection FIFO.#
+    (and
+      (eq pc.0. 12)
+      (in (apply phase.0. scan.0.) (set 1 2 3))
+      (exists :o.0 Ops.0.
+        (and
+          (eq (apply target.0. o.0) scan.0.)
+          (in (apply stage.0. o.0) (set 3 4))
+          (or (eq (apply stage.0. o.0) 3) (eq (apply (apply sends.0. (apply target.0. o.0)) 1) o.0))
+          (and
+            (if
+              (eq (apply stage.0. o.0) 4)
+              (prime sends.0.
+                (except sends.0.
+                  (mapsto
+                    (apply target.0. o.0)
+                    (if
+                      (eq (len (apply sends.0. (apply target.0. o.0))) 1)
+                      (seq)
+                      (seq (apply (apply sends.0. (apply target.0. o.0)) 2))))))
+              (and))
+            (prime stage.0. (except stage.0. (mapsto o.0 5)))
+            (prime produced.0. (except produced.0. (mapsto o.0 (plus (apply produced.0. o.0) 1))))
+            (prime results.0. (append results.0. o.0)))))))
+  (def :FinishTerminal.0.#Only after owned operations complete does finish release transport and publish cnFinished.
+    Shared commands may still target this ID.#
+    (and
+      (eq pc.0. 12)
+      (in (apply phase.0. scan.0.) (set 1 2 3))
+      (forall :o.0 Ops.0.
+        (not (and (eq (apply target.0. o.0) scan.0.) (in (apply stage.0. o.0) (set 3 4)))))
+      (prime phase.0. (except phase.0. (mapsto scan.0. 4)))
+      (prime pc.0. 4)))
+  (def :SendComplete.0.#writeFrames publishes a successful head-send completion. It uses the previously captured
+    request, including the late-cancel window.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      readRequest.0.
+      (eq (apply phase.0. scan.0.) 2)
+      (not (apply due.0. scan.0.))
+      (not
+        (or
+          (eq observedRequest.0. 2)
+          (eq snapshot.0. 2)
+          (and (eq snapshot.0. 1) (eq (apply phase.0. scan.0.) 1))))
+      (exists :o.0 Ops.0.
+        (and
+          (eq (apply target.0. o.0) scan.0.)
+          (eq (apply stage.0. o.0) 4)
+          (eq (apply (apply sends.0. scan.0.) 1) o.0)
+          (and
+            (if
+              (eq (apply stage.0. o.0) 4)
+              (prime sends.0.
+                (except sends.0.
+                  (mapsto
+                    (apply target.0. o.0)
+                    (if
+                      (eq (len (apply sends.0. (apply target.0. o.0))) 1)
+                      (seq)
+                      (seq (apply (apply sends.0. (apply target.0. o.0)) 2))))))
+              (and))
+            (prime stage.0. (except stage.0. (mapsto o.0 5)))
+            (prime produced.0. (except produced.0. (mapsto o.0 (plus (apply produced.0. o.0) 1))))
+            (prime results.0. (append results.0. o.0)))))))
+  (def :ServiceSkip.0.#Worker may revisit unfinished work on another turn, but cannot skip a request/deadline that
+    the current snapshot requires it to handle.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      (neq (apply phase.0. scan.0.) 4)
+      (or (not (apply active.0. scan.0.)) readRequest.0.)
+      (or
+        (not (apply active.0. scan.0.))
+        (not
+          (and
+            (in (apply phase.0. scan.0.) (set 1 2 3))
+            (or
+              (or
+                (eq observedRequest.0. 2)
+                (eq snapshot.0. 2)
+                (and (eq snapshot.0. 1) (eq (apply phase.0. scan.0.) 1)))
+              (and (eq (apply phase.0. scan.0.) 1) (eq observedRequest.0. 1))
+              (and
+                (eq (apply phase.0. scan.0.) 2)
+                (or (eq observedRequest.0. 1) (eq snapshot.0. 1)))
+              (apply due.0. scan.0.)))))
+      (prime scan.0. (plus scan.0. 1))
+      (prime readRequest.0. (false))
+      (prime observedRequest.0. 0)))
+  (def :ServiceFinished.0.#workerMain removes the finished connection object during its sweep. Mailbox retention
+    belongs to the consumer and is independent.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      (eq (apply phase.0. scan.0.) 4)
+      (prime active.0. (except active.0. (mapsto scan.0. (false))))
+      (prime scan.0. (plus scan.0. 1))
+      (prime readRequest.0. (false))
+      (prime observedRequest.0. 0)))
+  (def :ServiceUnused.0.#Skip identities not yet allocated. This is bounded model bookkeeping, not an extra
+    ConnectionState.#
+    (and
+      (and (eq pc.0. 4) (in scan.0. Ids.0.))
+      (eq (apply phase.0. scan.0.) 0)
+      (prime scan.0. (plus scan.0. 1))))
+  (def :NotifyReady.0.#All active connections have been visited; the turn reaches its shared condition broadcast.# (and (eq pc.0. 4) (eq scan.0. (plus (card Ids.0.) 1)) (prime pc.0. 5)))
+  (def :Notify.0.#workerMain broadcasts once before polling. Awakened callers must reacquire the lock and
+    recheck predicates; wakeup is not delivery.#
+    (and
+      (eq pc.0. 5)
+      (prime waiter.0.
+        (funof :c.0 Ids.0. (if (eq (apply waiter.0. c.0) 1) 2 (apply waiter.0. c.0))))
+      (prime resultWait.0. (if (eq resultWait.0. 1) 2 resultWait.0.))
+      (prime pc.0.
+        (if
+          (and
+            (in client.0. (set 1 2))
+            (forall :c.0 Ids.0. (not (apply active.0. c.0)))
+            (eq (len commands.0.) 0))
+          10
+          6))))
+  (def :Poll.0.#Bounded curl poll returns to the next worker turn. Actual poll duration is abstracted.# (and (eq pc.0. 6) (prime pc.0. 0)))
+  (def :Fatal.0.#Top-level CatchableError changes client state to aborting and detaches shared commands. This
+    is distinct from a single-connection failure.#
+    (and
+      (in pc.0. (set 0 6))
+      (prime client.0. 2)
+      (prime pc.0. 8)
+      (prime batch.0. commands.0.)
+      (prime commands.0. (seq))
+      (prime stage.0. (funof :o.0 Ops.0. (if (eq (apply stage.0. o.0) 1) 2 (apply stage.0. o.0))))))
+  (def :FatalDrain.0.#Worker exception handler completes shared queued commands, including connects with mailboxes
+    but no worker-owned transport.#
+    (and
+      (eq pc.0. 8)
+      (gt (len batch.0.) 0)
+      (let
+        (bind :o.0 (apply batch.0. 1))
+        (and
+          (and
+            (if
+              (eq (apply stage.0. o.0) 4)
+              (prime sends.0.
+                (except sends.0.
+                  (mapsto
+                    (apply target.0. o.0)
+                    (if
+                      (eq (len (apply sends.0. (apply target.0. o.0))) 1)
+                      (seq)
+                      (seq (apply (apply sends.0. (apply target.0. o.0)) 2))))))
+              (and))
+            (prime stage.0. (except stage.0. (mapsto o.0 5)))
+            (prime produced.0. (except produced.0. (mapsto o.0 (plus (apply produced.0. o.0) 1))))
+            (prime results.0. (append results.0. o.0)))
+          (prime batch.0.
+            (if
+              (eq (len batch.0.) 1)
+              (seq)
+              (if
+                (eq (len batch.0.) 2)
+                (seq (apply batch.0. 2))
+                (seq (apply batch.0. 2) (apply batch.0. 3)))))))))
+  (def :FatalDrained.0.#After shared commands complete, the exception handler drains worker-owned operations.# (and (eq pc.0. 8) (eq (len batch.0.) 0) (prime pc.0. 9)))
+  (def :FatalCompletion.0.#Complete each worker-owned operation once, preserving per-connection send FIFO.#
+    (and
+      (eq pc.0. 9)
+      (exists :o.0 Ops.0.
+        (and
+          (in (apply stage.0. o.0) (set 3 4))
+          (or (eq (apply stage.0. o.0) 3) (eq (apply (apply sends.0. (apply target.0. o.0)) 1) o.0))
+          (and
+            (if
+              (eq (apply stage.0. o.0) 4)
+              (prime sends.0.
+                (except sends.0.
+                  (mapsto
+                    (apply target.0. o.0)
+                    (if
+                      (eq (len (apply sends.0. (apply target.0. o.0))) 1)
+                      (seq)
+                      (seq (apply (apply sends.0. (apply target.0. o.0)) 2))))))
+              (and))
+            (prime stage.0. (except stage.0. (mapsto o.0 5)))
+            (prime produced.0. (except produced.0. (mapsto o.0 (plus (apply produced.0. o.0) 1))))
+            (prime results.0. (append results.0. o.0)))))))
+  (def :FatalFinished.0.#Exception cleanup marks every allocated mailbox terminal and releases all worker ownership
+    after pending operations complete.#
+    (and
+      (eq pc.0. 9)
+      (forall :o.0 Ops.0. (not (in (apply stage.0. o.0) (set 3 4))))
+      (prime phase.0.
+        (funof :c.0 Ids.0. (if (in (apply phase.0. c.0) (set 1 2 3)) 4 (apply phase.0. c.0))))
+      (prime active.0. (funof :c.0 Ids.0. (false)))
+      (prime pc.0. 10)))
+  (def :Exit.0.#worker finally sets csStopped and broadcasts. This final notification releases empty result
+    waiters as well as event/disposal waiters.#
+    (and
+      (eq pc.0. 10)
+      (prime client.0. 3)
+      (prime waiter.0.
+        (funof :c.0 Ids.0. (if (eq (apply waiter.0. c.0) 1) 2 (apply waiter.0. c.0))))
+      (prime resultWait.0. (if (eq resultWait.0. 1) 2 resultWait.0.))
+      (prime pc.0. 11)))
+  (def :PublishMessage.0.#One-unit receive queue abstraction. Exact byte limits, fragmentation and overflow are
+    checked in websocket_frames_close.nif.#
+    (exists :c.0 Ids.0.
+      (and
+        (apply active.0. c.0)
+        (in (apply phase.0. c.0) (set 2 3))
+        (eq pc.0. 4)
+        (eq scan.0. c.0)
+        (eq (apply events.0. c.0) 0)
+        (prime events.0. (except events.0. (mapsto c.0 1))))))
+  (def :BeginEventWait.0.#retrieveEvent pins one known mailbox before waiting. One consumer per connection is a caller
+    precondition.#
+    (exists :c.0 Ids.0.
+      (and
+        (apply retained.0. c.0)
+        (eq (apply waiter.0. c.0) 0)
+        (eq client.0. 0)
+        (not closed.0.)
+        (prime waiter.0.
+          (except waiter.0.
+            (mapsto c.0 (if (or (gt (apply events.0. c.0) 0) (eq (apply phase.0. c.0) 4)) 2 1))))
+        (prime waitKind.0. (except waitKind.0. (mapsto c.0 1)))
+        (prime expired.0. (except expired.0. (mapsto c.0 (false)))))))
+  (def :BeginDispose.0.#closeConnection requests close and waits exclusively, then discards unread data. Accepted
+    completions remain available.#
+    (exists :c.0 Ids.0.
+      (and
+        (apply retained.0. c.0)
+        (eq (apply waiter.0. c.0) 0)
+        (eq client.0. 0)
+        (not closed.0.)
+        (prime waiter.0. (except waiter.0. (mapsto c.0 (if (eq (apply phase.0. c.0) 4) 2 1))))
+        (prime waitKind.0. (except waitKind.0. (mapsto c.0 2)))
+        (prime request.0.
+          (except request.0.
+            (mapsto c.0 (if (eq (apply request.0. c.0) 0) 1 (apply request.0. c.0))))))))
+  (def :ExpireWait.0.#Elapsed event deadline does not itself wake a condition waiter. Periodic/final broadcasts
+    are required for predicate rechecks.#
+    (exists :c.0 Ids.0.
+      (and
+        (neq (apply waiter.0. c.0) 0)
+        (eq (apply waitKind.0. c.0) 1)
+        (not (apply expired.0. c.0))
+        (prime expired.0. (except expired.0. (mapsto c.0 (true)))))))
+  (def :ResumeEvent.0.#retrieveEvent prioritizes queued messages, then terminal status, then timeout. Terminal
+    retrieval removes the retained mailbox slot.#
+    (exists :c.0 Ids.0.
+      (and
+        (eq (apply waiter.0. c.0) 2)
+        (eq (apply waitKind.0. c.0) 1)
+        (if
+          (gt (apply events.0. c.0) 0)
+          (and
+            (prime events.0. (except events.0. (mapsto c.0 (minus (apply events.0. c.0) 1))))
+            (and
+              (prime waiter.0. (except waiter.0. (mapsto c.0 0)))
+              (prime waitKind.0. (except waitKind.0. (mapsto c.0 0)))
+              (prime expired.0. (except expired.0. (mapsto c.0 (false))))))
+          (if
+            (eq (apply phase.0. c.0) 4)
+            (and
+              (prime retained.0. (except retained.0. (mapsto c.0 (false))))
+              (prime terminal.0. (except terminal.0. (mapsto c.0 (plus (apply terminal.0. c.0) 1))))
+              (and
+                (prime waiter.0. (except waiter.0. (mapsto c.0 0)))
+                (prime waitKind.0. (except waitKind.0. (mapsto c.0 0)))
+                (prime expired.0. (except expired.0. (mapsto c.0 (false))))))
+            (if
+              (apply expired.0. c.0)
+              (and
+                (prime waiter.0. (except waiter.0. (mapsto c.0 0)))
+                (prime waitKind.0. (except waitKind.0. (mapsto c.0 0)))
+                (prime expired.0. (except expired.0. (mapsto c.0 (false)))))
+              (prime waiter.0. (except waiter.0. (mapsto c.0 1)))))))))
+  (def :ResumeDispose.0.#closeConnection ignores unread messages and removes a terminal mailbox. Its completions are
+    retained independently.#
+    (exists :c.0 Ids.0.
+      (and
+        (eq (apply waiter.0. c.0) 2)
+        (eq (apply waitKind.0. c.0) 2)
+        (if
+          (eq (apply phase.0. c.0) 4)
+          (and
+            (prime retained.0. (except retained.0. (mapsto c.0 (false))))
+            (prime events.0. (except events.0. (mapsto c.0 0)))
+            (and
+              (prime waiter.0. (except waiter.0. (mapsto c.0 0)))
+              (prime waitKind.0. (except waitKind.0. (mapsto c.0 0)))
+              (prime expired.0. (except expired.0. (mapsto c.0 (false))))))
+          (prime waiter.0. (except waiter.0. (mapsto c.0 1)))))))
+  (def :PollEvent.0.#Nonblocking retrieval, including after owner join. One terminal result is returned per
+    retained mailbox unless disposal discards it.#
+    (exists :c.0 Ids.0.
+      (and
+        (apply retained.0. c.0)
+        (eq (apply waiter.0. c.0) 0)
+        (if
+          (gt (apply events.0. c.0) 0)
+          (prime events.0. (except events.0. (mapsto c.0 (minus (apply events.0. c.0) 1))))
+          (and
+            (eq (apply phase.0. c.0) 4)
+            (prime retained.0. (except retained.0. (mapsto c.0 (false))))
+            (prime terminal.0. (except terminal.0. (mapsto c.0 (plus (apply terminal.0. c.0)
+              1)))))))))
+  (def :BeginResultWait.0.#A result wait on a running client may sleep with no accepted operation. There is no result-
+    wait timeout in the public API.#
+    (and
+      (eq resultWait.0. 0)
+      (eq client.0. 0)
+      (not closed.0.)
+      (prime resultWait.0. (if (or (gt (len results.0.) 0) (eq client.0. 3)) 2 1))))
+  (def :ResumeResult.0.#retrieveResult rechecks after a broadcast, consumes at most one result and decrements
+    outstanding only when it is consumed.#
+    (and
+      (eq resultWait.0. 2)
+      (if
+        (gt (len results.0.) 0)
+        (and
+          (let
+            (bind :o.0 (apply results.0. 1))
+            (and
+              (prime results.0.
+                (if
+                  (eq (len results.0.) 1)
+                  (seq)
+                  (if
+                    (eq (len results.0.) 2)
+                    (seq (apply results.0. 2))
+                    (seq (apply results.0. 2) (apply results.0. 3)))))
+              (prime stage.0. (except stage.0. (mapsto o.0 6)))
+              (prime outstanding.0. (minus outstanding.0. 1))))
+          (prime resultWait.0. 0))
+        (prime resultWait.0. (if (eq client.0. 3) 0 1)))))
+  (def :PollResult.0.#Nonblocking result retrieval uses the same budget-release rule and remains available after
+    worker/owner shutdown.#
+    (and
+      (eq resultWait.0. 0)
+      (gt (len results.0.) 0)
+      (let
+        (bind :o.0 (apply results.0. 1))
+        (and
+          (prime results.0.
+            (if
+              (eq (len results.0.) 1)
+              (seq)
+              (if
+                (eq (len results.0.) 2)
+                (seq (apply results.0. 2))
+                (seq (apply results.0. 2) (apply results.0. 3)))))
+          (prime stage.0. (except stage.0. (mapsto o.0 6)))
+          (prime outstanding.0. (minus outstanding.0. 1))))))
+  (def :Inv.0.#Safety: operation conservation, queue ownership/cardinality, budget bounds, at-most-once
+    completions/terminal delivery, retained mailbox consistency and stopped-worker cleanup.#
+    (and
+      (in client.0. (range 0 3))
+      (in pc.0. (range 0 12))
+      (ge outstanding.0. 0)
+      (le outstanding.0. Budget.0.)
+      (eq outstanding.0. (card (setcomp :o.0 Ops.0. (in (apply stage.0. o.0) (range 1 5)))))
+      (eq (card (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 1))) (len commands.0.))
+      (forall :i.0 (range 1 (len commands.0.)) (eq (apply stage.0. (apply commands.0. i.0)) 1))
+      (eq (card (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 2))) (len batch.0.))
+      (forall :i.0 (range 1 (len batch.0.)) (eq (apply stage.0. (apply batch.0. i.0)) 2))
+      (eq (card (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 5))) (len results.0.))
+      (forall :i.0 (range 1 (len results.0.)) (eq (apply stage.0. (apply results.0. i.0)) 5))
+      (forall :o.0 Ops.0.
+        (and
+          (in (apply stage.0. o.0) (range 0 6))
+          (eq (apply produced.0. o.0) (if (in (apply stage.0. o.0) (set 5 6)) 1 0))
+          (implies (in (apply stage.0. o.0) (set 3 4)) (apply active.0. (apply target.0. o.0)))))
+      (forall :c.0 Ids.0.
+        (and
+          (in (apply phase.0. c.0) (range 0 4))
+          (in (apply events.0. c.0) (range 0 1))
+          (eq
+            (len (apply sends.0. c.0))
+            (card
+              (setcomp :pending.0 Ops.0.
+                (and (eq (apply stage.0. pending.0) 4) (eq (apply target.0. pending.0) c.0)))))
+          (le (apply terminal.0. c.0) 1)
+          (implies
+            (gt (apply terminal.0. c.0) 0)
+            (and
+              (eq (apply phase.0. c.0) 4)
+              (not (apply retained.0. c.0))
+              (eq (apply events.0. c.0) 0)))
+          (implies
+            (and (neq (apply phase.0. c.0) 0) (not (apply retained.0. c.0)))
+            (eq (apply phase.0. c.0) 4))))
+      (implies
+        (eq client.0. 3)
+        (and
+          (eq (len commands.0.) 0)
+          (eq (len batch.0.) 0)
+          (neq resultWait.0. 1)
+          (forall :c.0 Ids.0. (neq (apply waiter.0. c.0) 1))
+          (forall :o.0 Ops.0. (in (apply stage.0. o.0) (set 0 5 6)))
+          (forall :c.0 Ids.0. (not (apply active.0. c.0)))))
+      (implies closed.0. (eq client.0. 3))))
+  (def :Next.0.#Environment and worker interleavings. Unprimed variables stutter in Tlanif. No fairness is
+    claimed by the safety CLI itself.#
+    (or SubmitConnect.0. SubmitSend.0. RequestClose.0. Cancel.0. Stop.0. Abort.0. Join.0. Detach.0.
+      Process.0. CommandsDone.0. Upgrade.0. PublishUpgrade.0. UpgradeSkip.0. Snapshot.0.
+      ReadRequest.0. ServiceClose.0. BeginFinish.0. TickDue.0. FinishCompletion.0. FinishTerminal.0.
+      SendComplete.0. ServiceSkip.0. ServiceFinished.0. ServiceUnused.0. NotifyReady.0. Notify.0.
+      Poll.0. Fatal.0. FatalDrain.0. FatalDrained.0. FatalCompletion.0. FatalFinished.0. Exit.0.
+      PublishMessage.0. BeginEventWait.0. BeginDispose.0. ExpireWait.0. ResumeEvent.0.
+      ResumeDispose.0. PollEvent.0. BeginResultWait.0. ResumeResult.0. PollResult.0.))
+  (def :FairWorker.0.#Progress assumption annotation: weakly fair worker scheduling.
+    The Tlanif safety CLI does not enforce fairness or prove temporal goals.#
+    (or Detach.0. Process.0. CommandsDone.0. Upgrade.0. PublishUpgrade.0. UpgradeSkip.0. Snapshot.0.
+      ReadRequest.0. ServiceClose.0. BeginFinish.0. FinishCompletion.0. FinishTerminal.0.
+      SendComplete.0. ServiceSkip.0. ServiceFinished.0. ServiceUnused.0. NotifyReady.0. Notify.0.
+      Poll.0. FatalDrain.0. FatalDrained.0. FatalCompletion.0. FatalFinished.0. Exit.0.))
+  (def :FairDue.0.#Assume deadlines eventually become due when work remains. Clock nonprogress is deliberately
+    outside the progress claim.# (or TickDue.0.))
+  (def :FairResult.0.#Result consumption assumes a willing consumer; this assumption is unnecessary for worker
+    shutdown.# (or ResumeResult.0. PollResult.0.))
+  (def :FairEvent.0.#Event/disposal waiter progress assumes callers run after wakeup. Reduced scenarios can
+    disable these actions.# (or ResumeEvent.0. ResumeDispose.0. PollEvent.0.))
+  (def :FairWaitClock.0.#Assume the finite event-wait deadline elapses. Delivery of messages remains higher priority
+    than an elapsed deadline.# (or ExpireWait.0.))
+  (def :GoalShutdown.0.#Conditional progress: running is not required to stop spontaneously; once stopping/aborting,
+    the worker must reach stopped.# (or (eq client.0. 0) (eq client.0. 3)))
+  (def :GoalCompletions.0.#Every accepted operation eventually has its result consumed under the explicit
+    worker/clock/result-consumer fairness assumptions.# (forall :o.0 Ops.0. (in (apply stage.0. o.0) (set 0 6))))
+  (def :GoalEventWait.0.#Event/disposal callers eventually return through message, terminal status or timeout.# (forall :c.0 Ids.0. (eq (apply waiter.0. c.0) 0)))
+  (def :GoalResultWait.0.#Exclude the legitimate infinite wait for nonexistent future results on an empty running
+    client.# (or (eq resultWait.0. 0) (and (eq (len results.0.) 0) (neq client.0. 3))))
+  (def :GoalWaiters.0.#Diagnostic only: unconditional return of an empty running-client result waiter is
+    deliberately not a required goal.# (and (eq resultWait.0. 0) (forall :c.0 Ids.0. (eq (apply waiter.0. c.0) 0))))
+  (def :WitnessCancelAfterRead.0.#Reachability probe for a captured no-stop request, later cancel and a send completion. It
+    does not instrument their temporal ordering or error kind.#
+    (exists :c.0 Ids.0.
+      (and
+        (eq (apply request.0. c.0) 2)
+        (eq observedRequest.0. 0)
+        readRequest.0.
+        (exists :o.0 Ops.0.
+          (and
+            (eq (apply target.0. o.0) c.0)
+            (eq (apply kind.0. o.0) 2)
+            (eq (apply stage.0. o.0) 5))))))
+  (def :WitnessWorkerOwnsUnretained.0.#Expected transient: a consumer removes a finished mailbox before the worker sweeps its
+    finished connection object.#
+    (exists :c.0 Ids.0. (and (apply active.0. c.0) (not (apply retained.0. c.0)))))
+  (def :WitnessStoppedPending.0.#Must be unreachable: stopped worker with an accepted operation lacking a published
+    completion.#
+    (and (eq client.0. 3) (exists :o.0 Ops.0. (in (apply stage.0. o.0) (range 1 4)))))
+  (def :WitnessTerminalTwice.0.#Must be unreachable under the one-consumer precondition.# (exists :c.0 Ids.0. (gt (apply terminal.0. c.0) 1)))
+  (def :WitnessTwoConnections.0.#Positive only in the duplex bound; absent from the one-slot scenarios by construction.# (eq (card Retained.0.) 2))
+  (def :WitnessIsolation.0.#With Ids=1..2, Slots=2 and SeedOpen=true, cancellation
+    of one connection can leave another open with a send completion available.
+    The default one-ID model cannot reach this two-connection witness.#
+    (exists :bad.0 Ids.0.
+      (exists :healthy.0 Ids.0.
+        (and (neq bad.0 healthy.0)
+          (eq (apply phase.0. bad.0) 4) (eq (apply request.0. bad.0) 2)
+          (eq (apply phase.0. healthy.0) 2) (eq (apply request.0. healthy.0) 0)
+          (exists :o.0 Ops.0.
+            (and (eq (apply target.0. o.0) healthy.0)
+              (in (apply stage.0. o.0) (set 5 6))))))))
+  (def :WitnessBudgetFull.0.#Positive in reuse/duplex. The main two-operation connect-then-send horizon cannot fill
+    budget two.# (eq outstanding.0. Budget.0.))
+  (def :WitnessClosing.0.#Nonvacuity check that the local graceful-close phase is reached.# (exists :c.0 Ids.0. (eq (apply phase.0. c.0) 3)))
+  (def :WitnessFinishedRetained.0.#Expected: terminal mailboxes retain their slot until the consumer drains or disposes them.#
+    (exists :c.0 Ids.0. (and (eq (apply phase.0. c.0) 4) (apply retained.0. c.0))))
+  (def :WitnessFatalQueued.0.#Expected: global worker failure can find queued connects without worker transport objects.# (and (eq pc.0. 8) (gt (len batch.0.) 0)))
+  (def :WitnessStoppedResults.0.#Expected: WebSocket shutdown preserves published results and their outstanding budget
+    entries.# (and (eq client.0. 3) (gt (len results.0.) 0)))
+  (def :WitnessDisposedPending.0.#Expected: terminal disposal can precede completion of a send still in the shared/detached
+    command queue.#
+    (exists :c.0 Ids.0.
+      (and
+        (eq (apply phase.0. c.0) 4)
+        (not (apply retained.0. c.0))
+        (exists :o.0 Ops.0.
+          (and (eq (apply target.0. o.0) c.0) (in (apply stage.0. o.0) (set 1 2)))))))
+  (spec
+    (always-stutter Init.0. Next.0.
+      (tuple client.0. closed.0. pc.0. scan.0. snapshot.0. phase.0. retained.0. active.0. request.0.
+        commands.0. batch.0. results.0. stage.0. target.0. kind.0. produced.0. outstanding.0.
+        events.0. terminal.0. waiter.0. waitKind.0. expired.0. resultWait.0. due.0. sends.0.
+        readRequest.0. observedRequest.0.)))
+  (check Inv.0.)
+)

@@ -1,0 +1,316 @@
+(stmts#Integrated finite model of src/relay/http.nim. Two logical request objects,
+ one easy handle by default; set Handles to two to cover concurrent transfers. Objects are NOT
+ user requestId values, which may repeat. stage: unused=0 caller-batch=1 queued=2
+ configuring=3 in-flight=4 finalizing=5 ready=6 consumed=7 owner-discarded=8
+ owner-abandoned-without-completion=9 (the observed abort race).
+ client: running=0 stopping=1 aborting=2 stopped=3. closed means owner joined and
+ destroyed synchronization. pc: dispatch=0 configure=1 snapshot=2 branch=3
+ perform=4 wait-check=5 flush=6 finalize=7 poll=8 sleep=9 exit=10 stopped=11
+ done-messages=12. waiter: idle=0 sleeping=1 awake=2. Local critical sections are
+ atomic; configuring/finalizing and the worker's snapshots are separate actions.
+ No HTTP calls follow owner shutdown; only the worker can progress during it.
+ Payloads, curl internals, ARC and real time are outside this abstraction.#
+  (constants :Ops.0. :Handles.0.)
+  (assign Ops.0. (range 1 2))
+  (assign Handles.0. 1)
+  (variables :client.0. :closed.0. :ownerShutdown.0. :pc.0. :slot.0. :snapshotAbort.0. :snapshotFlight.0.
+    :awake.0. :waiter.0. :batch.0. :queue.0. :results.0. :stage.0. :produced.0.
+    :due.0. :available.0. :outstanding.0. :admitted.0. :published.0. :moved.0. :clearedPrivate.0.)
+  (def :Init.0.#Successful constructor with a running worker and an intact easy-handle pool.
+    All variables are initialized; constructor rollback is outside this model.#
+    (and (prime client.0. 0) (prime closed.0. (false))
+      (prime ownerShutdown.0. (false)) (prime pc.0. 0)
+      (prime slot.0. 0) (prime snapshotAbort.0. (false)) (prime snapshotFlight.0. (false))
+      (prime awake.0. (true)) (prime waiter.0. 0)
+      (prime batch.0. (seq)) (prime queue.0. (seq)) (prime results.0. (seq))
+      (prime stage.0. (funof :o.0 Ops.0. 0))
+      (prime produced.0. (funof :o.0 Ops.0. 0))
+      (prime due.0. (funof :o.0 Ops.0. (false)))
+      (prime available.0. Handles.0.) (prime outstanding.0. 0)
+      (prime admitted.0. (seq)) (prime published.0. (seq))
+      (prime moved.0. (false)) (prime clearedPrivate.0. (false))))
+  (def :Flight.0.#Objects actually registered in the inFlight table.#
+    (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 4)))
+  (def :Active.0.#numInFlight counts configuring and finalizing objects as well as table entries.#
+    (setcomp :o.0 Ops.0. (in (apply stage.0. o.0) (range 3 5))))
+  (def :PendingDone.0.#Curl can make transfers ready in any order. Readiness is a boolean
+    abstraction of CURLMSG_DONE, not a wall-clock deadline.#
+    (setcomp :o.0 Flight.0. (apply due.0. o.0)))
+  (def :AddBatch.0.#Caller-owned RequestBatch builder; no admission or handle reservation yet.#
+    (and (eq client.0. 0) (not closed.0.)
+      (exists :o.0 Ops.0.
+        (and (eq (apply stage.0. o.0) 0)
+          (prime stage.0. (except stage.0. (mapsto o.0 1)))
+          (prime batch.0. (append batch.0. o.0))))))
+  (def :SubmitBatch.0.#startRequests checks state before moving any item. The entire batch
+    is admitted atomically under lock and emptied; stopped rejection is a stutter.#
+    (and (eq client.0. 0) (not closed.0.) (gt (len batch.0.) 0)
+      (prime stage.0. (funof :o.0 Ops.0.
+        (if (eq (apply stage.0. o.0) 1) 2 (apply stage.0. o.0))))
+      (prime queue.0. (concat queue.0. batch.0.))
+      (prime admitted.0. (concat admitted.0. batch.0.))
+      (prime outstanding.0. (plus outstanding.0. (len batch.0.)))
+      (prime batch.0. (seq)) (prime moved.0. (true)) (prime awake.0. (true))))
+  (def :SubmitOne.0.#startRequest admits one fresh request and signals the sleeping worker.
+    maxInFlight limits handle ownership, not accepted queue length.#
+    (and (eq client.0. 0) (not closed.0.)
+      (exists :o.0 Ops.0.
+        (and (eq (apply stage.0. o.0) 0)
+          (prime stage.0. (except stage.0. (mapsto o.0 2)))
+          (prime queue.0. (append queue.0. o.0))
+          (prime admitted.0. (append admitted.0. o.0))
+          (prime outstanding.0. (plus outstanding.0. 1)) (prime awake.0. (true))))))
+  (def :Stop.0.#Owner close begins after all other callers return. New public calls
+    are disabled while shutdown owns the client; accepted work still drains.#
+    (and (eq client.0. 0) (eq waiter.0. 0)
+      (prime client.0. 1) (prime ownerShutdown.0. (true)) (prime awake.0. (true))))
+  (def :Abort.0.#Owner abort wakes idle worker and cancels what the worker observes.
+    Work already taken out of the queue can finish its current private step.#
+    (and (eq client.0. 0) (eq waiter.0. 0)
+      (prime client.0. 2) (prime ownerShutdown.0. (true)) (prime awake.0. (true))))
+  (def :Join.0.#shutdown joins, discards unread HTTP results, resets outstanding and
+    destroys the easy-handle pool and synchronization. Repeated close is stutter.#
+    (and (eq client.0. 3) (eq waiter.0. 0) (not closed.0.)
+      (prime stage.0. (funof :o.0 Ops.0.
+        (if (eq (apply stage.0. o.0) 6) 8
+          (if (eq (apply stage.0. o.0) 2) 9 (apply stage.0. o.0)))))
+      (prime queue.0. (seq))
+      (prime results.0. (seq)) (prime outstanding.0. 0)
+      (prime available.0. 0) (prime ownerShutdown.0. (true)) (prime closed.0. (true))))
+  (def :Take.0.#dispatchQueuedRequests removes the FIFO head and a pooled easy handle
+    under lock. The RequestWrap is private until registration or failure delivery.#
+    (and (eq pc.0. 0) (neq client.0. 2) (gt available.0. 0) (gt (len queue.0.) 0)
+      (let (bind :o.0 (apply queue.0. 1))
+        (and (prime slot.0. o.0) (prime pc.0. 1)
+          (prime available.0. (minus available.0. 1))
+          (prime stage.0. (except stage.0. (mapsto o.0 3)))
+          (prime queue.0. (if (eq (len queue.0.) 1) (seq) (seq (apply queue.0. 2))))))))
+  (def :DispatchDone.0.#Graceful stopping keeps dispatching; abort prevents another take.#
+    (and (eq pc.0. 0)
+      (or (eq client.0. 2) (eq available.0. 0) (eq (len queue.0.) 0))
+      (prime pc.0. 2)))
+  (def :ConfigureOk.0.#configureEasy and addHandle succeeded. An abort arriving after Take
+    does not retract this step; the next worker abort check will flush it.#
+    (and (eq pc.0. 1)
+      (prime stage.0. (except stage.0. (mapsto slot.0. 4)))
+      (prime slot.0. 0) (prime pc.0. 0)))
+  (def :ConfigureFailed.0.#Caught CatchableError becomes one internal result and returns its
+    handle. Publishing does not decrement outstanding.#
+    (and (eq pc.0. 1)
+      (prime stage.0. (except stage.0. (mapsto slot.0. 6)))
+      (prime produced.0. (except produced.0. (mapsto slot.0. (plus (apply produced.0. slot.0.) 1))))
+      (prime results.0. (append results.0. slot.0.))
+      (prime published.0. (append published.0. slot.0.))
+      (prime available.0. (plus available.0. 1))
+      (prime waiter.0. (if (eq waiter.0. 1) 2 waiter.0.))
+      (prime slot.0. 0) (prime pc.0. 0)))
+  (def :Snapshot.0.#workerMain captures shouldAbort and hasInflight under lock. A later
+    owner abort can race the unlocked branch and completion processing.#
+    (and (eq pc.0. 2) (prime snapshotAbort.0. (eq client.0. 2))
+      (prime snapshotFlight.0. (gt (card Flight.0.) 0)) (prime pc.0. 3)))
+  (def :Branch.0.#Use captured predicates, never reread client state at this branch.#
+    (and (eq pc.0. 3)
+      (prime pc.0. (if snapshotAbort.0. 6 (if snapshotFlight.0. 4 5)))))
+  (def :Perform.0.#One finite successful multi.perform call; response content/errors are
+    abstracted. IOError instead follows Fatal.#
+    (and (eq pc.0. 4) (prime pc.0. 12)))
+  (def :TakeDone.0.#processDoneMessages pops an inFlight entry under lock. Finalization
+    runs outside lock while still owning its easy handle.#
+    (and (eq pc.0. 12)
+      (exists :o.0 PendingDone.0.
+        (and (prime stage.0. (except stage.0. (mapsto o.0 5)))
+          (prime due.0. (except due.0. (mapsto o.0 (false))))
+          (prime slot.0. o.0) (prime pc.0. 7)))))
+  (def :Finalize.0.#completionFromCurl catches local CatchableError. Both normal/error
+    results return the handle and signal resultCond under one lock section.#
+    (and (eq pc.0. 7)
+      (prime stage.0. (except stage.0. (mapsto slot.0. 6)))
+      (prime produced.0. (except produced.0. (mapsto slot.0. (plus (apply produced.0. slot.0.) 1))))
+      (prime results.0. (append results.0. slot.0.))
+      (prime published.0. (append published.0. slot.0.))
+      (prime available.0. (plus available.0. 1))
+      (prime waiter.0. (if (eq waiter.0. 1) 2 waiter.0.))
+      (prime slot.0. 0) (prime pc.0. 12)))
+  (def :DoneEnd.0.#Empty/unknown CURLMSG_DONE entries do not own a request; processing
+    them is a stutter. Finish the current done-message pass when none remain.#
+    (and (eq pc.0. 12) (eq (card PendingDone.0.) 0) (prime pc.0. 8)))
+  (def :Poll.0.#Collapse the bounded poll or skipped poll into one finite action.
+    Exact shouldPoll affects delay but no modeled safety ownership.#
+    (and (eq pc.0. 8) (prime pc.0. 0)))
+  (def :WaitCheck.0.#waitForWorkOrClose rechecks state under lock; close exits only once
+    accepted queue/table work is empty. Wake signals are not stored by a condition.#
+    (and (eq pc.0. 5)
+      (if (or (eq client.0. 2)
+          (and (eq client.0. 1) (eq (len queue.0.) 0) (eq (card Flight.0.) 0)))
+        (prime pc.0. 10)
+        (if (and (eq (len queue.0.) 0) (eq (card Flight.0.) 0))
+          (and (prime pc.0. 9) (prime awake.0. (false)))
+          (prime pc.0. 0)))))
+  (def :Wake.0.#A submission/shutdown that occurs after sleeping signals wakeCond.
+    Predicate checking and entry to sleep are atomic, avoiding lost wakeups.#
+    (and (eq pc.0. 9) awake.0. (prime pc.0. 5)))
+  (def :Fatal.0.#The outer worker catches IOError from perform/poll, not every Defect.
+    Neither private configuration nor finalization is present at these points.#
+    (and (in pc.0. (set 4 8)) (prime client.0. 2) (prime pc.0. 6)))
+  (def :Flush.0.#flushFailedLocked atomically publishes queued work in FIFO order, then
+    table entries in either order, returns all handles, and leaves ready results intact.#
+    (and (eq pc.0. 6)
+      (exists :order.0 (set (seq 1 2) (seq 2 1))
+        (let
+          (bind :activeResults.0
+            (if (eq (card Flight.0.) 2) order.0
+              (if (eq (card Flight.0.) 1) (seq (choose :o.0 Flight.0. (true))) (seq))))
+          (bind :completed.0 (concat queue.0. activeResults.0))
+          (and
+            (prime stage.0. (funof :o.0 Ops.0.
+              (if (in (apply stage.0. o.0) (set 2 4)) 6 (apply stage.0. o.0))))
+            (prime produced.0. (funof :o.0 Ops.0.
+              (if (in (apply stage.0. o.0) (set 2 4))
+                (plus (apply produced.0. o.0) 1) (apply produced.0. o.0))))
+            (prime due.0. (funof :o.0 Ops.0. (false)))
+            (prime results.0. (concat results.0. completed.0))
+            (prime published.0. (concat published.0. completed.0))
+            (prime queue.0. (seq)) (prime available.0. Handles.0.)
+            (prime waiter.0. (if (and (gt (len completed.0) 0) (eq waiter.0. 1)) 2 waiter.0.))
+            (prime pc.0. 10))))))
+  (def :Exit.0.#The final broadcast wakes an empty result waiter even if no completion
+    was published during failure cleanup.#
+    (and (eq pc.0. 10) (prime client.0. 3) (prime pc.0. 11)
+      (prime waiter.0. (if (eq waiter.0. 1) 2 waiter.0.))))
+  (def :TickDone.0.#Fair environment eventually makes each registered transfer finish
+    through response or timeout. Queue time is not represented as curl transfer time.#
+    (exists :o.0 Flight.0.
+      (and (not (apply due.0. o.0)) (prime due.0. (except due.0. (mapsto o.0 (true)))))))
+  (def :ClearQueue.0.#clearQueue only cancels the shared queue, never configuring,
+    in-flight or finalizing requests. It publishes, not consumes, cancellations.#
+    (and (not ownerShutdown.0.) (not closed.0.) (gt (len queue.0.) 0)
+      (prime stage.0. (funof :o.0 Ops.0.
+        (if (eq (apply stage.0. o.0) 2) 6 (apply stage.0. o.0))))
+      (prime produced.0. (funof :o.0 Ops.0.
+        (if (eq (apply stage.0. o.0) 2)
+          (plus (apply produced.0. o.0) 1) (apply produced.0. o.0))))
+      (prime results.0. (concat results.0. queue.0.))
+      (prime published.0. (concat published.0. queue.0.))
+      (prime queue.0. (seq))
+      (prime clearedPrivate.0. (or clearedPrivate.0. (gt (card Active.0.) 0)))
+      (prime waiter.0. (if (eq waiter.0. 1) 2 waiter.0.))))
+  (def :BeginWait.0.#One modeled result consumer. An empty running-client wait is
+    legitimately indefinite until submission or worker failure. No timeout exists.#
+    (and (not ownerShutdown.0.) (not closed.0.) (eq waiter.0. 0)
+      (prime waiter.0. (if (or (gt (len results.0.) 0) (eq client.0. 3)) 2 1))))
+  (def :Consume.0.#FIFO consumption frees outstanding. Existing awakened waiters may
+    run during unexpected worker failure, before owner join.#
+    (and (not closed.0.) (gt (len results.0.) 0)
+      (or (eq waiter.0. 2) (and (eq waiter.0. 0) (not ownerShutdown.0.)))
+      (let (bind :o.0 (apply results.0. 1))
+        (and (prime stage.0. (except stage.0. (mapsto o.0 7)))
+          (prime results.0. (if (eq (len results.0.) 1) (seq) (seq (apply results.0. 2))))
+          (prime outstanding.0. (minus outstanding.0. 1)) (prime waiter.0. 0)))))
+  (def :ResumeEmpty.0.#Recheck condition predicate after wake. Stopped plus no result
+    returns false; otherwise an empty waiter sleeps again.#
+    (and (eq waiter.0. 2) (eq (len results.0.) 0) (not closed.0.)
+      (prime waiter.0. (if (eq client.0. 3) 0 1))))
+  (def :CoverageInv.0.#Object/result conservation, batch/queue/result membership, exactly one
+    publication per completed object, handle ownership through private windows,
+    accounting-query consistency, stopped cleanup and closed-resource release.#
+    (and (in client.0. (range 0 3)) (in pc.0. (range 0 12))
+      (in available.0. (range 0 Handles.0.)) (in waiter.0. (range 0 2))
+      (eq outstanding.0. (card (setcomp :o.0 Ops.0. (in (apply stage.0. o.0) (range 2 6)))))
+      (eq (minus (minus outstanding.0. (len results.0.)) (len queue.0.)) (card Active.0.))
+      (eq (gt outstanding.0. (len results.0.))
+        (exists :o.0 Ops.0. (in (apply stage.0. o.0) (range 2 5))))
+      (implies (not closed.0.) (eq (plus available.0. (card Active.0.)) Handles.0.))
+      (eq (len batch.0.) (card (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 1))))
+      (forall :i.0 (range 1 (len batch.0.)) (eq (apply stage.0. (apply batch.0. i.0)) 1))
+      (eq (len queue.0.) (card (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 2))))
+      (forall :i.0 (range 1 (len queue.0.)) (eq (apply stage.0. (apply queue.0. i.0)) 2))
+      (eq (len results.0.) (card (setcomp :o.0 Ops.0. (eq (apply stage.0. o.0) 6))))
+      (forall :i.0 (range 1 (len results.0.)) (eq (apply stage.0. (apply results.0. i.0)) 6))
+      (eq (len admitted.0.) (card (setcomp :o.0 Ops.0. (ge (apply stage.0. o.0) 2))))
+      (eq (len published.0.) (card (setcomp :o.0 Ops.0. (in (apply stage.0. o.0) (range 6 8)))))
+      (forall :o.0 Ops.0.
+        (and (in (apply stage.0. o.0) (range 0 9))
+          (eq (apply produced.0. o.0) (if (in (apply stage.0. o.0) (range 6 8)) 1 0))
+          (implies (apply due.0. o.0) (eq (apply stage.0. o.0) 4))))
+      (eq (card (setcomp :o.0 Ops.0. (in (apply stage.0. o.0) (set 3 5))))
+        (if (in pc.0. (set 1 7)) 1 0))
+      (eq (neq slot.0. 0) (in pc.0. (set 1 7)))
+      (implies (eq pc.0. 1) (eq (apply stage.0. slot.0.) 3))
+      (implies (eq pc.0. 7) (eq (apply stage.0. slot.0.) 5))
+      (implies (eq client.0. 3) (eq (card Active.0.) 0))
+      (implies (eq client.0. 3) (neq waiter.0. 1))
+      (implies closed.0. (and (eq client.0. 3) (eq available.0. 0)
+        (eq outstanding.0. 0) (eq (len results.0.) 0) (eq waiter.0. 0)))))
+  (def :Inv.0.#Required completion guarantee. FAILS for current HTTP implementation:
+    an abort after a no-inflight snapshot exits waitForWorkOrClose without flushing.
+    Change the final check to CoverageInv to explore remaining accounting
+    properties, explicitly excluding the failing completion guarantee.#
+    (and CoverageInv.0.
+      (implies (eq client.0. 3) (eq (len queue.0.) 0))
+      (forall :o.0 Ops.0. (neq (apply stage.0. o.0) 9))))
+  (def :Next.0.#All legal worker/caller/environment interleavings. Calls rejected without
+    state changes and repeated owner shutdown are represented by spec stuttering.#
+    (or AddBatch.0. SubmitBatch.0. SubmitOne.0. Stop.0. Abort.0. Join.0.
+      Take.0. DispatchDone.0. ConfigureOk.0. ConfigureFailed.0. Snapshot.0. Branch.0.
+      Perform.0. TakeDone.0. Finalize.0. DoneEnd.0. Poll.0. WaitCheck.0. Wake.0.
+      Fatal.0. Flush.0. Exit.0. TickDone.0. ClearQueue.0. BeginWait.0. Consume.0. ResumeEmpty.0.))
+  (def :FairWorker.0.#Progress assumption annotation: weakly fair worker scheduling;
+    optional failure injection is not required. The safety CLI does not enforce
+    fairness or prove temporal goals.#
+    (or Take.0. DispatchDone.0. ConfigureOk.0. ConfigureFailed.0. Snapshot.0. Branch.0.
+      Perform.0. TakeDone.0. Finalize.0. DoneEnd.0. Poll.0. WaitCheck.0. Wake.0. Flush.0. Exit.0.))
+  (def :FairNetwork.0.#Finite transfers eventually finish through data or timeout;
+    indefinitely stalled curl/environment behavior is outside the claim.# (or TickDone.0.))
+  (def :FairConsumer.0.#Explicit willing-consumer assumption. Owner close/abort can discard
+    results, so progress goals allow owner join rather than claiming post-close retrieval.#
+    (or Consume.0. ResumeEmpty.0.))
+  (def :FairOwner.0.#Once worker is stopped and other callers finish, assume owner joins.
+    No assumption requires spontaneous close of a running client.# (or Join.0.))
+  (def :GoalShutdown.0.#A stopping/aborting client eventually reaches worker-stopped.#
+    (or (eq client.0. 0) (eq client.0. 3)))
+  (def :GoalOperations.0.#Every accepted object eventually leaves pending/ready state:
+    it is consumed before shutdown, or owner shutdown discards its published result.#
+    (forall :o.0 Ops.0. (in (apply stage.0. o.0) (set 0 1 7 8))))
+  (def :GoalResultWait.0.#Empty running-client waits need not return without future work.
+    A stopped worker must release even an empty waiter.#
+    (or (eq waiter.0. 0) (and (eq (len results.0.) 0) (neq client.0. 3))))
+  (def :WitnessConfiguring.0.#Private setup gap remains visible in numInFlight.# (eq pc.0. 1))
+  (def :WitnessFinalizing.0.#Private completion gap remains visible in numInFlight.# (eq pc.0. 7))
+  (def :WitnessPoolFullQueued.0.#One-handle scenario reaches a full pool with accepted queued work.#
+    (and (eq available.0. 0) (gt (len queue.0.) 0)))
+  (def :WitnessBatchMoved.0.#Nonvacuity: successful batch admission empties caller batch.#
+    (and moved.0. (eq (len batch.0.) 0) (gt (len admitted.0.) 0)))
+  (def :WitnessBatchRejected.0.#Worker failure leaves unsubmitted caller-owned batch intact.#
+    (and (eq client.0. 3) (gt (len batch.0.) 0)))
+  (def :WitnessClearPrivate.0.#Nonvacuity: clearQueue ran while another object was active.# clearedPrivate.0.)
+  (def :WitnessAbortConfig.0.#Abort may arrive after queue removal and before registration.#
+    (and (eq client.0. 2) (eq pc.0. 1)))
+  (def :WitnessAbortFinalizing.0.#Abort may arrive after done-message removal and before publication.#
+    (and (eq client.0. 2) (eq pc.0. 7)))
+  (def :WitnessGracefulActive.0.#Graceful stopping preserves active work rather than canceling it.#
+    (and (eq client.0. 1) (gt (card Active.0.) 0)))
+  (def :WitnessStoppedResults.0.#Stopped worker can retain results before owner cleanup.#
+    (and (eq client.0. 3) (gt (len results.0.) 0)))
+  (def :WitnessDiscarded.0.#Unlike WebSocket, HTTP owner shutdown drops unread results.#
+    (exists :o.0 Ops.0. (eq (apply stage.0. o.0) 8)))
+  (def :WitnessSleeping.0.#Idle worker condition wait is reachable.# (eq pc.0. 9))
+  (def :WitnessTwoActive.0.#Positive in the two-handle scenario only.# (eq (card Flight.0.) 2))
+  (def :WitnessOutOfOrder.0.#Completion publication can reverse admission order. clearQueue
+    can do this with one handle; two active handles also have a separate probe.#
+    (and (eq (len admitted.0.) 2) (gt (len published.0.) 0)
+      (eq (apply published.0. 1) (apply admitted.0. 2))))
+  (def :WitnessTransferOutOfOrder.0.#Second admitted transfer is being finalized while the
+    first remains in flight and no result has been published. Its next Finalize
+    publishes second first. Unlike WitnessOutOfOrder, this excludes queued
+    cancellation/setup failure and requires two easy handles.#
+    (and (eq (len admitted.0.) 2) (eq (len published.0.) 0)
+      (eq pc.0. 7) (eq slot.0. (apply admitted.0. 2))
+      (eq (apply stage.0. (apply admitted.0. 1)) 4)))
+  (def :WitnessStoppedPending.0.#Must be unreachable: stopped worker with unpublished accepted work.#
+    (and (eq client.0. 3) (exists :o.0 Ops.0. (in (apply stage.0. o.0) (range 2 5)))))
+  (spec (always-stutter Init.0. Next.0.
+    (tuple client.0. closed.0. ownerShutdown.0. pc.0. slot.0. snapshotAbort.0. snapshotFlight.0.
+      awake.0. waiter.0. batch.0. queue.0. results.0. stage.0. produced.0. due.0.
+      available.0. outstanding.0. admitted.0. published.0. moved.0. clearedPrivate.0.)))
+  (check Inv.0.)
+)
