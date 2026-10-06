@@ -1,5 +1,5 @@
 # Package
-version = "1.2.0"
+version = "1.2.1"
 author = "planetis"
 description = "Relay: HTTP and persistent WebSocket clients for Nim"
 license = "MIT"
