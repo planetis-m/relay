@@ -21,6 +21,10 @@ nimble install
 ```
 
 ## Quick Start (Blocking Batch)
+
+These examples focus on the successful path. Each result also includes an `error`
+field; see [Error Handling](#error-handling) for how to check it.
+
 ```nim
 import relay/http
 
@@ -31,11 +35,7 @@ try:
   batch.get("https://example.org", requestId = 2)
 
   for item in client.makeRequests(batch):
-    if item.error.kind == teNone:
-      echo item.response.request.requestId, " status=", item.response.code
-    else:
-      echo item.response.request.requestId, " error=", item.error.kind,
-        " ", item.error.message
+    echo item.response.request.requestId, " -> ", item.response.code
 finally:
   client.close()
 ```
@@ -46,11 +46,8 @@ import relay/http
 
 let client = newHttpClient()
 try:
-  let item = client.get("https://example.com", requestId = 7)
-  if item.error.kind == teNone:
-    echo item.response.request.requestId, " status=", item.response.code
-  else:
-    echo item.error.kind, " ", item.error.message
+  let item = client.get("https://example.com")
+  echo item.response.body
 finally:
   client.close()
 ```
@@ -68,16 +65,13 @@ try:
   batch.post("https://example.com/api", body = """{"x":2}""", requestId = 102)
 
   # Capture size before startRequests(batch) drains the batch.
-  var pending = batch.len
+  let pending = batch.len
   client.startRequests(batch)
-  while pending > 0:
+  for _ in 0..<pending:
     var item: RequestResult
-    if client.waitForResult(item):
-      dec pending
-      if item.error.kind == teNone:
-        echo item.response.request.requestId, " -> ", item.response.code
-      else:
-        echo item.response.request.requestId, " failed: ", item.error.message
+    if not client.waitForResult(item):
+      break
+    echo item.response.request.requestId, " -> ", item.response.code
 finally:
   client.close()
 ```
@@ -274,18 +268,11 @@ proc queueLen*(client: HttpClient): int
 - Redirects are enabled by default (`maxRedirects`).
 - Response body is automatically decoded when server uses gzip/deflate.
 
-## Error Handling Pattern
-```nim
-for item in client.makeRequests(batch):
-  if item.error.kind == teNone:
-    # HTTP transport succeeded; still check status code policy in app layer.
-    if is2xx(item.response.code):
-      discard
-    else:
-      echo "http error status=", item.response.code
-  else:
-    echo "transport error kind=", item.error.kind, " msg=", item.error.message
-```
+## Error Handling
+
+`item.error.kind == teNone` means the transport succeeded. Check
+`is2xx(item.response.code)` for an HTTP success status. Transport failures include
+details in `item.error.kind` and `item.error.message`.
 
 ## Examples
 ```bash
@@ -311,14 +298,8 @@ try:
     let sent = client.send(opened.connectionId, "hello")
     if sent.error.kind == teNone:
       let item = client.receive(opened.connectionId)
-      case item.kind
-      of wrMessage: echo item.message.data
-      of wrClosed: echo "closed: ", item.error.message
-      of wrTimedOut: echo "receive timed out"
-    else:
-      echo sent.error.kind, " ", sent.error.message
-  else:
-    echo opened.error.kind, " ", opened.error.message
+      if item.kind == wrMessage:
+        echo item.message.data
 finally:
   client.close()
 ```

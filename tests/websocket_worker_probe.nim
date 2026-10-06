@@ -36,11 +36,39 @@ proc awaitEvent(waiter: ptr Waiter) {.thread.} =
 proc main() =
   let url = paramStr(1)
   let mode = paramStr(2)
+  let limitMode = mode.startsWith("limit-")
   let service = newWebSocketClient(maxConnections = 2, maxCommands = 2,
-    maxEvents = 2, maxQueuedBytes = if mode == "bytes": 8 else: 32 * 1024 * 1024,
+    maxEvents = if limitMode: 64 else: 2,
+    maxMessageBytes = if limitMode: 8 else: 32 * 1024 * 1024,
+    maxQueuedBytes = if mode == "bytes" or mode.startsWith("limit-queue"): 8
+      else: 32 * 1024 * 1024,
     defaultTimeoutMs = 1500, bypassProxy = true, caInfo = paramStr(3))
   try:
-    if mode == "blocking-client":
+    if limitMode:
+      let id = service.opened(url & mode)
+      sleep(80) # Queue checks must exercise retained messages, before draining.
+      if mode in ["limit-frame-exact", "limit-fragments-exact"]:
+        let message = service.eventFor(id)
+        doAssert message.kind == weMessage and message.message.data == "abcdefgh"
+        doAssert message.message.kind == wmBinary
+        doAssert service.eventFor(id).kind == weClosed
+      elif mode == "limit-queue-exact":
+        for data in ["abcd", "efgh"]:
+          doAssert service.eventFor(id).message.data == data
+        doAssert service.eventFor(id).error.kind == teCanceled
+      else:
+        if mode == "limit-queue-over":
+          doAssert service.eventFor(id).message.data == "abcd"
+        let terminal = service.eventFor(id)
+        doAssert terminal.kind == weClosed and terminal.error.kind == teProtocol
+        let expected = if mode.startsWith("limit-queue"): "queue overflow"
+          else: "message exceeds byte limit"
+        doAssert terminal.error.message.contains(expected), terminal.error.message
+      # A bad peer only closes its connection; the worker still serves others.
+      let healthy = service.opened(url)
+      doAssert service.resultFor(service.text(healthy, "healthy")).error.kind == teNone
+      doAssert service.eventFor(healthy).message.data == "healthy"
+    elif mode == "blocking-client":
       let client = newWebSocketClient(maxConnections = 1, maxCommands = 1,
         defaultTimeoutMs = 1500, maxMessageBytes = 8, bypassProxy = true)
       try:

@@ -65,7 +65,9 @@ async function fixture(tls) {
       } else if (item.opcode === 10) {
         ++evidence.pongs;
         assert.deepEqual(item.payload, Buffer.from('idle ping'));
-        if (!req.url.endsWith('duplex')) socket.write(frame('pong observed'));
+        if (!req.url.endsWith('duplex') && !req.url.startsWith('/limit-')) {
+          socket.write(frame('pong observed'));
+        }
       } else if (item.opcode === 8) {
         ++evidence.closes;
         if (req.url.endsWith('close-handshake')) {
@@ -80,6 +82,17 @@ async function fixture(tls) {
     if (req.url.endsWith('flood')) {
       socket.write(Buffer.concat(Array.from({length: 10}, (_, i) => frame(`flood${i}`))));
     }
+    const limitFrames = {
+      '/limit-frame-exact': [frame('abcdefgh', 2), frame('', 8)],
+      '/limit-frame-over': [frame('x', 2, true, 9)],
+      '/limit-huge-header': [frame('x', 2, true, 2 ** 40)],
+      '/limit-fragments-exact': [frame('abcd', 2, false), frame('idle ping', 9),
+        frame('efgh', 0), frame('', 8)],
+      '/limit-fragments-over': [frame('abcd', 2, false), frame('efghi', 0)],
+      '/limit-queue-exact': [frame('abcd', 2), frame('efgh', 2), frame('', 8)],
+      '/limit-queue-over': [frame('abcd', 2), frame('efghi', 2)],
+    };
+    if (limitFrames[req.url]) socket.write(Buffer.concat(limitFrames[req.url]));
   });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
@@ -123,7 +136,9 @@ for (const mode of ['http-first', 'socket-first', 'blocking-client', 'blocking-f
   'idle', 'pressure', 'cancel-connect',
   'cancel-send', 'queued-deadline', 'cancel-receive', 'failure', 'shutdown-full',
   'bytes', 'duplex', 'partial', 'idle-close', 'abort-full', 'shutdown-scope', 'slow-peer',
-  'disconnect', 'disconnect-send']) {
+  'disconnect', 'disconnect-send', 'limit-frame-exact', 'limit-frame-over',
+  'limit-huge-header', 'limit-fragments-exact', 'limit-fragments-over',
+  'limit-queue-exact', 'limit-queue-over']) {
   test(`separate WebSocket worker: ${mode}`, async () => {
     const server = await fixture();
     try {

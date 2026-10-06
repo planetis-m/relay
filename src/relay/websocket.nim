@@ -485,7 +485,7 @@ proc newWebSocketClient*(maxConnections = 16; maxCommands = 64; maxEvents = 64;
   try:
     client.multi = initMulti()
     createThread(client.thread, workerMain, addr client[])
-  except Exception:
+  except CatchableError:
     reset(client.multi)
     cleanupCurl()
     deinitCond(client.resultCond)
