@@ -265,9 +265,8 @@
       Take.0. DispatchDone.0. ConfigureOk.0. ConfigureFailed.0. Snapshot.0. Branch.0.
       Perform.0. TakeDone.0. Finalize.0. DoneEnd.0. Poll.0. WaitCheck.0. Wake.0.
       Fatal.0. Flush.0. Exit.0. TickDone.0. ClearQueue.0. BeginWait.0. Consume.0. ResumeEmpty.0.))
-  (def :FairWorker.0.#Progress assumption annotation: weakly fair worker scheduling;
-    optional failure injection is not required. The safety CLI does not enforce
-    fairness or prove temporal goals.#
+  (def :FairWorker.0.#Select with --fair for weakly fair worker scheduling. This disjunction is one
+    fairness group; optional failure injection is not required.#
     (or Take.0. DispatchDone.0. ConfigureOk.0. ConfigureFailed.0. Snapshot.0. Branch.0.
       Perform.0. TakeDone.0. Finalize.0. DoneEnd.0. Poll.0. WaitCheck.0. Wake.0. Flush.0. Exit.0.))
   (def :FairNetwork.0.#Finite transfers eventually finish through data or timeout;
@@ -279,10 +278,16 @@
     No assumption requires spontaneous close of a running client.# (or Join.0.))
   (def :GoalShutdown.0.#A stopping/aborting client eventually reaches worker-stopped.#
     (or (eq client.0. 0) (eq client.0. 3)))
+  (def :GoalDelivery.0.#Accepted objects eventually publish a result, except owner-aborted queued work
+    abandoned by a stopped worker. No consumer or owner-join fairness is needed.
+    Stages 0/1 are unaccepted; 6/7/8 are published; 9 is owner-abort discard after join.#
+    (forall :o.0 Ops.0.
+      (or (in (apply stage.0. o.0) (set 0 1 6 7 8 9))
+        (and ownerAbort.0. (eq client.0. 3) (eq (apply stage.0. o.0) 2)))))
   (def :GoalOperations.0.#Every accepted object eventually leaves pending/ready state:
     it is consumed before shutdown, owner join discards its published result, or
-    owner abort discards queued work without a result. Fair scheduling is an
-    annotation; the Tlanif safety CLI does not check this temporal claim.#
+    owner abort discards queued work without a result. Select with --live and
+    FairWorker/FairNetwork/FairConsumer/FairOwner to check this finite progress claim.#
     (forall :o.0 Ops.0.
       (or (in (apply stage.0. o.0) (set 0 1 7 8))
         (and ownerAbort.0. (eq (apply stage.0. o.0) 9)))))

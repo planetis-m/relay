@@ -677,8 +677,8 @@
       Poll.0. Fatal.0. FatalDrain.0. FatalDrained.0. FatalCompletion.0. FatalFinished.0. Exit.0.
       PublishMessage.0. BeginEventWait.0. BeginDispose.0. ExpireWait.0. ResumeEvent.0.
       ResumeDispose.0. PollEvent.0. BeginResultWait.0. ResumeResult.0. PollResult.0.))
-  (def :FairWorker.0.#Progress assumption annotation: weakly fair worker scheduling.
-    The Tlanif safety CLI does not enforce fairness or prove temporal goals.#
+  (def :FairWorker.0.#Select with --fair for weakly fair worker scheduling. This disjunction is one
+    fairness group; optional failure injection is not required.#
     (or Detach.0. Process.0. CommandsDone.0. Upgrade.0. PublishUpgrade.0. UpgradeSkip.0. Snapshot.0.
       ReadRequest.0. ServiceClose.0. BeginFinish.0. FinishCompletion.0. FinishTerminal.0.
       SendComplete.0. ServiceSkip.0. ServiceFinished.0. ServiceUnused.0. NotifyReady.0. Notify.0.
@@ -693,6 +693,14 @@
     than an elapsed deadline.# (or ExpireWait.0.))
   (def :GoalShutdown.0.#Conditional progress: running is not required to stop spontaneously; once stopping/aborting,
     the worker must reach stopped.# (or (eq client.0. 0) (eq client.0. 3)))
+  (def :GoalTerminal.0.#A mailbox close/cancel request or started close eventually reaches finished. No event
+    consumption or spontaneous closure of an open connection is required.#
+    (forall :c.0 Ids.0.
+      (or (eq (apply phase.0. c.0) 4)
+        (and (neq (apply phase.0. c.0) 3) (eq (apply request.0. c.0) 0)))))
+  (def :GoalPublished.0.#Every accepted operation eventually publishes exactly one completion, independently of
+    result consumption. Finite identities never recycle, so pending stages persist until publication.#
+    (forall :o.0 Ops.0. (in (apply stage.0. o.0) (set 0 5 6))))
   (def :GoalCompletions.0.#Every accepted operation eventually has its result consumed under the explicit
     worker/clock/result-consumer fairness assumptions.# (forall :o.0 Ops.0. (in (apply stage.0. o.0) (set 0 6))))
   (def :GoalEventWait.0.#Event/disposal callers eventually return through message, terminal status or timeout.# (forall :c.0 Ids.0. (eq (apply waiter.0. c.0) 0)))

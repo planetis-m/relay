@@ -1,8 +1,9 @@
 No supported-API defect was established. HTTP and WebSocket's checked properties
 have no violation within the stated finite bounds. HTTP owner abort can skip internal
 completion publication, which is permitted by its clarified shutdown contract.
-Direct Tlanif results are recorded below. Temporal liveness is discussed from the
-source; Tlanif's safety CLI does not prove eventual progress.
+Direct safety and native bounded liveness results are recorded below. Required
+progress goals pass under explicit weak fairness; the safety CLI alone does not
+prove eventual progress.
 The [README](README.md) defines bounds, atomicity and fairness.
 
 Implementation observations below are **TRACED** from source and model interleavings.
@@ -43,7 +44,7 @@ its wait predicate. The default invariant permits unpublished work only when gho
 ownerAbort records owner cancellation. Graceful shutdown and unexpected worker failure
 must publish all accepted completions before stopping. At-most-once publication,
 accounting, resource release and wakeup checks remain intact. Discarded work is a
-terminal outcome in the progress annotation, not a delivery-progress failure.
+terminal outcome in the progress goals, not a delivery-progress failure.
 
 HTTP [shutdown](../src/relay/http.nim:288) discards unread results and destroys
 synchronization after join. This is documented: drain/query before shutdown; afterwards
@@ -130,8 +131,9 @@ constructor rollback, byte parsing, TLS, retry correctness, exact error kinds, m
 HTTP waiters or wall-clock guarantees. Progress relies on stated fairness: an unscheduled
 worker, nonadvancing transfer deadline or unwilling consumer can stall independently.
 
-Direct validation on 2026-10-06 used `tlanif` from PATH, with source audited at commit
-`d62f987771ee4899ce0ad3cafc73679e8a2e941a`. Counts below agree between
+Initial safety validation on 2026-10-06 used `tlanif` from PATH, with source audited at
+`d62f987771ee4899ce0ad3cafc73679e8a2e941a`. The six exhaustive passing scenarios were
+also rerun with the native-feature build at `741bff8`. Counts below agree between
 sequential-reference and `--jobs:4` compiled-parallel exploration, with cap 400,000:
 
 | Specification / variation | Safety result | States |
@@ -161,14 +163,72 @@ variations completed. No temporal liveness claim is derived from these safety ru
 Final broadcast is checked as a safety condition: stopped state must not retain an
 asleep waiter. Eventual execution of awakened callers still needs scheduler fairness.
 
-The Tlanif source audit found no temporal/fairness evaluation or deadlock reporting:
-`explore.nim` performs invariant checks and successor BFS, and `loader.nim` keeps only
-the last check form. Two temporary safety probes confirmed the limitation in both
-evaluators: a permanently pending shutdown with a cycling worker passed with two states;
-accepted pending work with no enabled Next action passed with one state. These probes
-were removed. `Fair*`/`Goal*` names carry no special meaning. Missing liveness checking
-matters for eventual waiter progress and shutdown; the safety results cannot certify
-either. Direct runs suffice for safety and reachability without scripts.
+Native liveness validation on 2026-10-06 used a release build of Tlanif commit
+`741bff8`, available as `tlanif` in PATH. Its freshly compiled native
+regression suite passed fixtures, 120 independent fairness-oracle graphs, deep SCCs,
+witness checks, CLI outcomes and reference/four-worker safety agreement. No external
+graph checker or result parser was used. The old safety-only checker at `d62f987`
+could not establish eventual progress; the new native mode closes that gap.
+
+Both native evaluators completed every following graph at cap 400,000 with the same
+state/edge counts and passing goals. Every run also checked the safety invariant.
+Edges are unique full-state transitions, including implicit stuttering at every state.
+No selected goal was reported vacuous, and no state lacked a fair continuation.
+
+| Specification / variation | States | Edges | Progress goals passed |
+| --- | ---: | ---: | --- |
+| WebSocket lifecycle, default | 91,346 | 429,469 | GoalShutdown, GoalTerminal, GoalPublished, GoalCompletions, GoalResultWait, GoalEventWait |
+| WebSocket reuse | 213,205 | 856,973 | GoalShutdown, GoalTerminal, GoalPublished, GoalCompletions |
+| WebSocket duplex | 166,938 | 599,579 | GoalShutdown, GoalTerminal, GoalPublished, GoalCompletions |
+| WebSocket frames/close | 58,180 | 337,514 | GoalClose, GoalSends |
+| HTTP, one handle | 5,859 | 19,184 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait |
+| HTTP, two handles | 7,803 | 25,904 | GoalShutdown, GoalDelivery, GoalOperations, GoalResultWait |
+
+Fairness was selected separately for different guarantees; assuming consumers run
+was not used to establish shutdown or publication:
+
+| Goals | Selected weak-fairness groups |
+| --- | --- |
+| WebSocket GoalShutdown, GoalTerminal, GoalPublished | FairWorker, FairDue |
+| WebSocket GoalCompletions, GoalResultWait | FairWorker, FairDue, FairResult |
+| WebSocket GoalEventWait, default only | FairWorker, FairDue, FairEvent, FairWaitClock |
+| Frames GoalClose | FairCancel, FairClose, FairClock, FairFinish |
+| Frames GoalSends | FairSendClock |
+| HTTP GoalShutdown, GoalDelivery | FairWorker, FairNetwork |
+| HTTP GoalOperations | FairWorker, FairNetwork, FairConsumer, FairOwner |
+| HTTP GoalResultWait, either handle bound | FairWorker, FairNetwork, FairConsumer |
+
+The README contains direct commands; its same reuse/duplex restrictions and HTTP
+two-handle change reproduce these variants. `GoalPublished` separates WebSocket
+publication from result consumption; `GoalTerminal` covers individual mailbox
+close/cancel requests independently of client shutdown. HTTP `GoalDelivery` permits
+only the previously traced owner-abort exception, even before join. Owner join is
+needed for `GoalOperations` to count unread/abandoned work as retired.
+
+Each claim is finite `[]<>Goal`, not general temporal logic. Finite IDs never
+recycle, so unresolved accepted work keeps publication/consumption goals false;
+these checks exclude starvation of each accepted operation in the finite horizon.
+Waiter goals exclude indefinite waits for nonexistent future work. Default waiter
+coverage has one consumer of each kind; reuse/duplex wait entry is disabled and no
+waiter-progress claim is made for them. Weak fairness of worker disjunctions does not
+promise fairness for each branch; it suffices for the checked finite graphs.
+`FairSendClock` combines eventual timeout with worker service, without any assumption
+that a peer reads or replies. No proof establishes wall-clock bounds or production
+scheduler behavior.
+
+Negative controls were also checked directly:
+
+| Invocation change | Expected and observed result |
+| --- | --- |
+| HTTP GoalShutdown without fairness | Exit 3; stopping worker can stutter before exit |
+| Frames GoalClose without FairClock, retaining FairCancel/FairClose/FairFinish | Exit 3; closing with a partial CLOSE can remain without expiry |
+| WebSocket GoalWaiters with all five lifecycle fairness groups | Exit 3; running-client result wait can wake and re-sleep forever with no future results |
+| HTTP GoalShutdown with FairWorker/FairNetwork and cap 10 | Exit 4; incomplete, no liveness conclusion |
+
+Failure witnesses were reference-validated by Tlanif. These failures are expected
+assumption/contract diagnostics, not supported-API defects. Required goals exposed
+no liveness violation. Direct CLI runs and manual result review suffice; the repository
+contains no liveness scripts, graph interchange, output parser or saved traces.
 
 Production sources reviewed at Relay commit `8b8a71bf9154b440a62c8831974f96cff608b20d`:
 
@@ -178,9 +238,9 @@ src/relay/http.nim
 src/relay/websocket.nim
 566a2aeb21fe8245467558c9519f358b74cadff85ad5a1b744ac061c83b094d3
 models/http_lifecycle.nif
-08e57c472c9ee1855e30dac09a2fe74aeb30e52695244cc184961c1b05971f09
+b7f8f8554c6ab2a728573ef4f60dd9f3e01b8d008600b9510a562579e6820c7b
 models/websocket_lifecycle.nif
-9dfb0e4dce0f94ab23216f3c9a8810c803021cd999973ac14c0d873235d9214d
+f5c8a12eaae1a7d435526a7f567a88d3cd3dc93848532a31c211a2774d1e32a7
 models/websocket_frames_close.nif
 b1476e1a11d3b1783b9d12f1e0c52cf69453e4656d3f5dbcc3aa3d717ba53884
 ```
@@ -201,5 +261,6 @@ On 2026-10-06 with WebSocket-enabled libcurl 8.18.0, the protocol test passed in
 release, danger and AddressSanitizer configurations. The complete default suite,
 `nim test tests/ci.nims`, passed all 14 standalone programs with threads and atomicArc.
 ASan covered the new protocol test, not the whole suite; TSan was not run. No confirmed
-runtime defect emerged. These results support the checked transport paths, but do not
-establish temporal progress, complete memory safety or all peer/TLS interoperability.
+runtime defect emerged. These tests support the checked transport paths; the native
+models separately establish the bounded progress claims above. Neither establishes
+complete memory safety, unbounded progress or all peer/TLS interoperability.

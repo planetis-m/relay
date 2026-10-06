@@ -10,7 +10,8 @@ The WebSocket split keeps frame state from multiplying lifecycle/mailbox state.
 HTTP fits in one integrated model. Source mappings, state encodings, atomicity and
 assumptions are documented directly in each `.nif` file.
 
-Run Tlanif directly from the repository root:
+Run Tlanif from PATH directly from the repository root. Native liveness requires
+Tlanif commit `741bff8` or later.
 
 ```sh
 tlanif --max-states:400000 models/websocket_lifecycle.nif
@@ -32,7 +33,7 @@ transfer completion. Its diagnostic `StrictCompletionInv` requires publication e
 during owner abort; checking it produces an eight-state counterexample to that stronger
 policy. This is allowed discard, not a supported-API defect. Restore the original
 check/bound after exploration. No wrapper, result parser,
-Python dependency, compiler setup or generated report machinery is necessary.
+Python dependency or generated report machinery is necessary.
 
 Default bounds: WebSocket lifecycle has one fresh connection, two operations, one
 retained slot and budget two. Frames/close starts with two accepted sends and allows
@@ -63,12 +64,40 @@ tokens, module symbols have trailing dots, bound locals do not, Init primes ever
 variable, and stutter tuples list every variable. Definitions are acyclic and omitted
 primes stutter. No unsupported temporal or `case` syntax is used.
 
-Tlanif checks safety only. `Fair*` and `Goal*` definitions document scheduling/time/
-consumer assumptions and intended progress predicates; they are not temporal checks
-performed by these commands. Safety includes final wakeup publication and stopped
-cleanup. Liveness discussion in the report is source-based and conditional on fair
-worker scheduling, advancing deadlines and consumers eventually running. An empty
-result wait on a running client can legitimately remain blocked indefinitely.
+The safety commands above check final wakeup publication and stopped cleanup.
+Run native bounded liveness with explicit goals and fairness groups:
+
+```sh
+tlanif --max-states:400000 --live:GoalShutdown,GoalTerminal,GoalPublished --fair:FairWorker,FairDue models/websocket_lifecycle.nif
+tlanif --max-states:400000 --live:GoalCompletions,GoalResultWait --fair:FairWorker,FairDue,FairResult models/websocket_lifecycle.nif
+tlanif --max-states:400000 --live:GoalEventWait --fair:FairWorker,FairDue,FairEvent,FairWaitClock models/websocket_lifecycle.nif
+tlanif --max-states:400000 --live:GoalClose --fair:FairCancel,FairClose,FairClock,FairFinish models/websocket_frames_close.nif
+tlanif --max-states:400000 --live:GoalSends --fair:FairSendClock models/websocket_frames_close.nif
+tlanif --max-states:400000 --live:GoalShutdown,GoalDelivery --fair:FairWorker,FairNetwork models/http_lifecycle.nif
+tlanif --max-states:400000 --live:GoalOperations --fair:FairWorker,FairNetwork,FairConsumer,FairOwner models/http_lifecycle.nif
+tlanif --max-states:400000 --live:GoalResultWait --fair:FairWorker,FairNetwork,FairConsumer models/http_lifecycle.nif
+```
+
+These commands pass. Append `--live-eval:reference` to repeat with the interpreter;
+both evaluators agree. Liveness is single-worker; do not add `--jobs` or `--sym`.
+Exit 3 reports a fair counterexample; exit 4 means incomplete, and exit 5 means
+no admissible fair behavior. Only an exhaustive exit 0 establishes bounded progress.
+
+Each selected goal means `[]<>Goal` under weak fairness of the selected action
+groups. A disjunction or existential action is one group, not fairness for each
+branch or connection. Finite operation identities never recycle: publication and
+consumption goals therefore exclude permanent starvation of any accepted operation
+within the horizon. Shutdown/publication checks do not require consumers to run.
+HTTP delivery permits owner-abort discard; full operation retirement additionally
+assumes owner join. Frame send fairness abstracts deadline expiry and worker service
+together, without requiring peer cooperation or successful delivery.
+
+Waiter progress covers one result consumer and, in the default WebSocket model,
+one event/disposal consumer. An empty result wait on a running client can legitimately
+remain blocked indefinitely; `GoalResultWait` excludes that case. `GoalWaiters` is
+an intentionally failing diagnostic. Reuse/duplex disable wait entry, so their
+liveness checks cover shutdown, terminal state, publication and consumption only.
+These proofs do not establish progress for unbounded work or multiple competing waiters.
 
 Caller constraints include creating-thread shutdown after other callers finish,
 exclusive access for blocking helpers, WebSocket sends after connect success and one
